@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/external/" />
+  <Folder Name="/external/caustikon/" />
+  <Folder Name="/external/caustikon/src/">
+    <Project Path="external/caustikon/src/Caustikon.Glasses/Caustikon.Glasses.csproj" />
+    <Project Path="external/caustikon/src/Caustikon/Caustikon.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Undine/Undine.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Undine.Tests/Undine.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/Undine.Bake/Undine.Bake.csproj" />
+  </Folder>
+</Solution>

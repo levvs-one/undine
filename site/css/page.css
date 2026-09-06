@@ -1,0 +1,39 @@
+/* Undine: what this page adds to the shared stylesheet. */
+
+.langs {
+    display: inline-flex;
+    gap: 0.2rem;
+    margin-left: 0.6rem;
+}
+
+.langs button {
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.langs button.active {
+    color: var(--fg);
+    border-color: var(--line-strong);
+    background: var(--panel);
+}
+
+.render-canvas.gl {
+    touch-action: none;
+    cursor: crosshair;
+}
+
+td.source {
+    font-size: 0.8rem;
+    color: var(--muted);
+    max-width: 28ch;
+}
+
+.readout.compact {
+    margin-top: 0.6rem;
+}

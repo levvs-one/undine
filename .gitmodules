@@ -1,0 +1,4 @@
+[submodule "external/caustikon"]
+	path = external/caustikon
+	url = https://github.com/levvs-one/caustikon.git
+	branch = design/glass-catalog
