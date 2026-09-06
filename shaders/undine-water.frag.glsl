@@ -32,16 +32,28 @@ float fresnel(float cosI, float n1, float n2) {
     return 0.5 * (rs * rs + rp * rp);
 }
 
+// Height at a point of the pool, bilinear from the nearest four cells (the texture itself is unfiltered).
+float heightUv(vec2 uv) {
+    ivec2 size = textureSize(uState, 0);
+    vec2 p = clamp(uv * vec2(size) - 0.5, vec2(0.0), vec2(size) - 1.0);
+    ivec2 i = ivec2(floor(p));
+    vec2 f = p - vec2(i);
+    ivec2 j = min(i + 1, size - 1);
+    float a = texelFetch(uState, i, 0).r, b = texelFetch(uState, ivec2(j.x, i.y), 0).r;
+    float c = texelFetch(uState, ivec2(i.x, j.y), 0).r, d = texelFetch(uState, j, 0).r;
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
 float height(vec2 xz) {
-    return texture(uState, xz / uSide + 0.5).r;
+    return heightUv(xz / uSide + 0.5);
 }
 
 vec3 normalAt(vec2 xz) {
     vec2 texel = 1.0 / vec2(textureSize(uState, 0));
     float cell = uSide * texel.x;
     vec2 uv = xz / uSide + 0.5;
-    float hl = texture(uState, uv - vec2(texel.x, 0.0)).r, hr = texture(uState, uv + vec2(texel.x, 0.0)).r;
-    float hd = texture(uState, uv - vec2(0.0, texel.y)).r, hu = texture(uState, uv + vec2(0.0, texel.y)).r;
+    float hl = heightUv(uv - vec2(texel.x, 0.0)), hr = heightUv(uv + vec2(texel.x, 0.0));
+    float hd = heightUv(uv - vec2(0.0, texel.y)), hu = heightUv(uv + vec2(0.0, texel.y));
     return normalize(vec3(-(hr - hl) / (2.0 * cell), 1.0, -(hu - hd) / (2.0 * cell)));
 }
 
@@ -64,12 +76,14 @@ vec3 floorColour(vec2 xz) {
     return mix(vec3(0.75, 0.76, 0.74), colour, grout);
 }
 
+// The sky the water reflects: bright haze at the horizon, deep blue overhead, the sun as a small disc with a glow.
+// Ripples show as the reflection slides between the haze and the blue, and as glints when a slope catches the sun.
 vec3 sky(vec3 d) {
-    float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 s = mix(vec3(0.62, 0.66, 0.72), vec3(0.24, 0.40, 0.70), pow(t, 0.6));
+    float t = clamp(d.y, 0.0, 1.0);
+    vec3 s = mix(vec3(0.74, 0.78, 0.84), vec3(0.18, 0.34, 0.66), pow(t, 0.45));
     vec3 toLamp = -uLight;
     float key = max(0.0, dot(d, toLamp));
-    s += vec3(1.0, 0.97, 0.90) * uLampStrength * (60.0 * pow(key, 900.0) + 1.5 * pow(key, 12.0));
+    s += vec3(1.0, 0.96, 0.88) * uLampStrength * (40.0 * smoothstep(0.9990, 0.9997, key) + 1.2 * pow(key, 24.0) + 0.25 * pow(key, 4.0));
     return s;
 }
 
@@ -86,7 +100,7 @@ float compand(float c) {
 vec3 floorLit(vec2 xz, float pathMetres, int channel) {
     vec2 uv = xz / uSide + 0.5;
     vec3 lamp = texture(uCaustic, uv).rgb * uCausticNorm;
-    vec3 light = vec3(0.35) + uLampStrength * 0.9 * max(0.0, -uLight.y) * lamp;
+    vec3 light = vec3(0.22) + uLampStrength * 0.55 * max(0.0, -uLight.y) * lamp;
     vec3 colour = floorColour(xz) * light;
     float t = exp(-uAlpha[channel] * pathMetres);
     return colour * t;
@@ -140,7 +154,7 @@ void main() {
                 vec3 onWall = hit + inside * wall;
                 // Wall tiles run along the wall and down it; the lamp reaches them through the water more weakly.
                 vec2 wallXz = abs(inside.x) * abs(halfSide - abs(onWall.x)) < abs(inside.z) * abs(halfSide - abs(onWall.z)) ? vec2(onWall.z, onWall.y) : vec2(onWall.x, onWall.y);
-                vec3 wallColour = floorColour(wallXz) * (0.35 + uLampStrength * 0.45 * max(0.0, -uLight.y));
+                vec3 wallColour = floorColour(wallXz) * (0.22 + uLampStrength * 0.3 * max(0.0, -uLight.y));
                 through = wallColour[c] * exp(-uAlpha[c] * wall);
             } else {
                 through = floorLit(hit.xz + inside.xz * path, path, c)[c];

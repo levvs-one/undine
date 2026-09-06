@@ -88,12 +88,14 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
     };
 
     // ---- textures ----
+    // Float textures are read with NEAREST: linear filtering of floats is an extension some GPUs lack, and a texture
+    // filtered that way without it is incomplete and reads as zero. The shaders interpolate by hand where they need to.
     function makeTexture(size, internal, format, type) {
         const texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texImage2D(gl.TEXTURE_2D, 0, internal, size, size, 0, format, type, null);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         const fbo = gl.createFramebuffer();
@@ -147,9 +149,9 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
             gl.uniform1f(sim.u.uViscosity, state.liquid.kinematicViscosity);
             if (state.touch) {
                 gl.uniform2f(sim.u.uTouch, state.touch.u, state.touch.v);
-                gl.uniform1f(sim.u.uTouchRadius, Math.max(2, 0.03 / cell()));
-                // A finger pushes the surface down about a centimetre per tenth of a second.
-                gl.uniform1f(sim.u.uTouchAmount, -0.01 * dt / 0.1);
+                gl.uniform1f(sim.u.uTouchRadius, Math.max(3, 0.05 / cell()));
+                // A finger pushes the surface down about three centimetres per tenth of a second.
+                gl.uniform1f(sim.u.uTouchAmount, -0.03 * dt / 0.1);
             } else {
                 gl.uniform2f(sim.u.uTouch, -1, -1);
                 gl.uniform1f(sim.u.uTouchRadius, 1);

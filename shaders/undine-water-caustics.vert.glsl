@@ -31,9 +31,10 @@ void main() {
     vec2 uv = (vec2(float(ix), float(iy)) + 0.5) / float(uGrid);
     ivec2 size = textureSize(uState, 0);
     vec2 texel = 1.0 / vec2(size);
-    float h = texture(uState, uv).r;
-    float hl = texture(uState, uv - vec2(texel.x, 0.0)).r, hr = texture(uState, uv + vec2(texel.x, 0.0)).r;
-    float hd = texture(uState, uv - vec2(0.0, texel.y)).r, hu = texture(uState, uv + vec2(0.0, texel.y)).r;
+    ivec2 c0 = ivec2(clamp(uv * vec2(size), vec2(0.0), vec2(size) - 1.0));
+    float h = texelFetch(uState, c0, 0).r;
+    float hl = texelFetch(uState, ivec2(max(c0.x - 1, 0), c0.y), 0).r, hr = texelFetch(uState, ivec2(min(c0.x + 1, size.x - 1), c0.y), 0).r;
+    float hd = texelFetch(uState, ivec2(c0.x, max(c0.y - 1, 0)), 0).r, hu = texelFetch(uState, ivec2(c0.x, min(c0.y + 1, size.y - 1)), 0).r;
     float side = uCell * float(size.x);
     vec3 normal = normalize(vec3(-(hr - hl) / (2.0 * uCell), 1.0, -(hu - hd) / (2.0 * uCell)));
     float n = channel == 0 ? uIor.x : (channel == 1 ? uIor.y : uIor.z);
