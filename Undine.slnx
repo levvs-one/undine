@@ -5,6 +5,9 @@
     <Project Path="external/caustikon/src/Caustikon.Glasses/Caustikon.Glasses.csproj" />
     <Project Path="external/caustikon/src/Caustikon/Caustikon.csproj" />
   </Folder>
+  <Folder Name="/site/">
+    <Project Path="site/Undine.Site/Undine.Site.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Undine/Undine.csproj" />
   </Folder>

@@ -34,10 +34,10 @@ jobs:
       - name: Bake the site data and require it to be committed
         run: |
           dotnet run --project tools/Undine.Bake -c Release --no-build
-          git diff --exit-code -- site/data/liquids.json
+          git diff --exit-code -- site/Undine.Site/wwwroot/data/liquids.json
 
       - name: Require the site to serve the shaders it hands out
         run: |
           for f in undine-water-sim.frag.glsl undine-water-caustics.vert.glsl undine-water.frag.glsl UndineWater.hlsl undine_water.gdshader; do
-            cmp "shaders/$f" "site/shaders/$f"
+            cmp "shaders/$f" "site/Undine.Site/wwwroot/shaders/$f"
           done

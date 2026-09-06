@@ -1,0 +1,370 @@
+@page "/give"
+@page "/give/{Topic}"
+@using System.Numerics
+@inject IJSRuntime Js
+@inject NavigationManager Navigation
+@inherits LocalizedComponent
+
+@* One page per craft. Pick a liquid and a depth; every format tab writes the numbers for that exact liquid, explains
+   each parameter, and the shaders it links are the ones the pool runs. *@
+
+<PageTitle>@L["give." + Key + ".name"] — Undine</PageTitle>
+<HeadContent>
+    <meta name="description" content="@L["give." + Key + ".tag"]" />
+</HeadContent>
+
+<h1>@L["give." + Key + ".h1"]</h1>
+<p class="lede">@T("give." + Key + ".lede", LiquidNames.Of(L, liquid))</p>
+
+<div class="controls">
+    <label class="control">
+        <span>@L["home.liquid"]</span>
+        <select @bind="liquidName">
+            @foreach (Liquid l in Liquids.All)
+            {
+                <option value="@l.Name">@LiquidNames.Of(L, l)</option>
+            }
+        </select>
+    </label>
+    <RangeField Label="@L["home.depth"]" @bind-Value="depth" Min="0.05" Max="20" Step="0.05" Unit="m" />
+</div>
+
+<div class="figures">
+    <div class="figure"><div class="value">@SiteInfo.Number(liquid.IndexD, 4)</div><div class="label">n<sub>d</sub></div></div>
+    <div class="figure"><div class="value">@SiteInfo.Number(optics.IndexRgb.X, 4), @SiteInfo.Number(optics.IndexRgb.Y, 4), @SiteInfo.Number(optics.IndexRgb.Z, 4)</div><div class="label">@L["give.fig.rgb"]</div></div>
+    <div class="figure"><div class="value">@SiteInfo.Number(optics.NormalReflectance * 100, 2)%</div><div class="label">@L["give.fig.face"]</div></div>
+    <div class="figure"><div class="value"><span class="swatch" style="background:@RoundTrip"></span> @RoundTrip</div><div class="label">@T("give.fig.tint", SiteInfo.Number(depth, 2))</div></div>
+    <div class="figure"><div class="value">@SiteInfo.Number(liquid.ViscosityMPaS, liquid.ViscosityMPaS < 10 ? 2 : 0) mPa·s</div><div class="label">@L["give.fig.visc"]</div></div>
+    <div class="figure"><div class="value">@SiteInfo.Number(Liquid.ShallowWaveSpeed(depth), 2) m/s</div><div class="label">@L["give.fig.speed"]</div></div>
+</div>
+
+<h2>@L["give.sec.code"]</h2>
+<nav class="subnav" aria-label="@L["give.sec.code"]">
+    @foreach (string f in Formats)
+    {
+        <button class="@(f == format ? "active" : "")" @onclick="() => format = f">@FormatName(f)</button>
+    }
+</nav>
+<p>@H("give.fmt." + format + ".p")</p>
+<div class="snippet">
+    <div class="snippet-bar"><span>@FormatName(format), @LiquidNames.Of(L, liquid), @SiteInfo.Number(depth, 2) m</span><button @onclick="() => Copy(Code())">@L["ui.copy"]</button></div>
+    <pre><code>@Code()</code></pre>
+</div>
+
+<h3>@L["give.sec.params"]</h3>
+<dl class="kv">
+    @foreach ((string name, string value, string explain) in Parameters())
+    {
+        <dt>@name</dt><dd><strong>@value</strong> — @H(explain)</dd>
+    }
+</dl>
+
+<h3>@L["give.sec.files"]</h3>
+<dl class="kv">
+    <dt><a href="shaders/undine-water-sim.frag.glsl" download>undine-water-sim.frag.glsl</a></dt><dd>@L["give.file.sim"]</dd>
+    <dt><a href="shaders/undine-water-caustics.vert.glsl" download>undine-water-caustics.vert.glsl</a></dt><dd>@L["give.file.caustic"]</dd>
+    <dt><a href="shaders/undine-water.frag.glsl" download>undine-water.frag.glsl</a></dt><dd>@L["give.file.render"]</dd>
+    <dt><a href="shaders/UndineWater.hlsl" download>UndineWater.hlsl</a></dt><dd>@L["give.file.hlsl"]</dd>
+    <dt><a href="shaders/undine_water.gdshader" download>undine_water.gdshader</a></dt><dd>@L["give.file.godot"]</dd>
+</dl>
+
+<h2>@L["give.sec.examples"]</h2>
+@foreach (string p in Paragraphs("examples"))
+{
+    <p>@H(p, Args)</p>
+}
+
+<h2>@L["give.sec.methods"]</h2>
+@foreach (string p in Paragraphs("methods"))
+{
+    <p>@H(p)</p>
+}
+
+<h2>@L["give.sec.advice"]</h2>
+<ul>
+    @foreach (string p in Paragraphs("advice"))
+    {
+        <li>@H(p)</li>
+    }
+</ul>
+
+@code {
+    public static readonly (string Slug, string Key)[] Topics =
+    [
+        ("design", "design"),
+        ("games", "games"),
+        ("blender", "blender"),
+        ("web", "web"),
+        ("dotnet", "dotnet"),
+    ];
+
+    [Parameter] public string? Topic { get; set; }
+
+    private string Key => Topics.FirstOrDefault(t => t.Slug == (Topic ?? "design")).Key ?? "design";
+
+    private string[] Formats => Key switch
+    {
+        "design" => ["glsl", "css"],
+        "games" => ["unity", "unreal", "godot", "hlsl"],
+        "blender" => ["blender", "gltf"],
+        "web" => ["threejs", "webgl"],
+        _ => ["cssurface", "csoptics", "cscaustics"],
+    };
+
+    private Liquid liquid = Liquids.Water;
+    private LiquidOptics optics = new(Liquids.Water);
+    private double depthValue = 1.2;
+    private string formatValue = "";
+
+    private string liquidName { get => liquid.Name; set { liquid = Liquids.Find(value) ?? Liquids.Water; optics = new LiquidOptics(liquid); } }
+    private double depth { get => depthValue; set => depthValue = value; }
+    private string format { get => Formats.Contains(formatValue) ? formatValue : Formats[0]; set => formatValue = value; }
+
+    private string RoundTrip
+    {
+        get
+        {
+            Vector3 t = optics.Transmittance(2 * depthValue);
+            static int Compand(float v) => (int)Math.Round(255 * (v <= 0.0031308f ? 12.92f * v : 1.055f * MathF.Pow(v, 1f / 2.4f) - 0.055f));
+            return $"#{Compand(t.X):x2}{Compand(t.Y):x2}{Compand(t.Z):x2}";
+        }
+    }
+
+    private object[] Args =>
+    [
+        LiquidNames.Of(L, liquid), SiteInfo.Number(liquid.IndexD, 4), SiteInfo.Number(optics.NormalReflectance * 100, 2), SiteInfo.Number(depth, 2),
+        RoundTrip, SiteInfo.Number(liquid.ViscosityMPaS, liquid.ViscosityMPaS < 10 ? 2 : 0), SiteInfo.Number(Liquid.ShallowWaveSpeed(depth), 2),
+        SiteInfo.Number(optics.CriticalAngleDegrees, 1), SiteInfo.Number(liquid.PhaseSpeed(0.02, depth), 2),
+    ];
+
+    private IEnumerable<string> Paragraphs(string section)
+    {
+        for (int i = 1; i <= 8; i++)
+        {
+            string key = $"give.{Key}.{section}.{i}";
+            if (L[key] == key)
+            {
+                yield break;
+            }
+
+            yield return key;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        liquid = SiteInfo.ReadLiquidQuery(Navigation, Liquids.Water);
+        optics = new LiquidOptics(liquid);
+    }
+
+    private static string C(double v, int decimals) => v.ToString("F" + decimals, CultureInfo.InvariantCulture);
+
+    private static string G(double v) => v.ToString("G6", CultureInfo.InvariantCulture);
+
+    private string FormatName(string f) => f switch
+    {
+        "glsl" => "GLSL", "css" => "CSS", "hlsl" => "HLSL", "unity" => "Unity", "unreal" => "Unreal", "godot" => "Godot", "blender" => "Blender",
+        "gltf" => "glTF", "threejs" => "three.js", "webgl" => "WebGL", "cssurface" => L["give.fmt.cssurface.name"], "csoptics" => L["give.fmt.csoptics.name"],
+        "cscaustics" => L["give.fmt.cscaustics.name"], _ => f,
+    };
+
+    private string Cite => $"{liquid.Name}: Caustikon.Glasses, {liquid.Optics.Provenance.Citation}; mechanics {liquid.Source}";
+
+    private string Code()
+    {
+        Vector3 n = optics.IndexRgb, a = optics.AbsorptionPerMetreRgb, t = optics.Transmittance(depthValue);
+        double d = depthValue;
+        string ior = $"{C(n.X, 5)}, {C(n.Y, 5)}, {C(n.Z, 5)}";
+        string alpha = $"{G(a.X)}, {G(a.Y)}, {G(a.Z)}";
+        string att = $"{C(t.X, 4)}, {C(t.Y, 4)}, {C(t.Z, 4)}";
+        switch (format)
+        {
+            case "glsl":
+            case "webgl":
+                return $$"""
+                // {{Cite}}
+                // The constants the three Undine shaders take for this liquid; the files themselves are linked below.
+                const vec3 uIor = vec3({{ior}});        // n at 610, 550, 465 nm
+                const vec3 uAlpha = vec3({{alpha}});    // absorption per metre, same wavelengths
+                const float uDepth = {{C(d, 2)}};                            // metres to the floor
+                const float uWaveSpeed = {{C(Liquid.ShallowWaveSpeed(d), 4)}};  // sqrt(g * depth), m/s
+                const float uViscosity = {{G(liquid.KinematicViscosity)}};       // kinematic, m^2/s
+                """;
+            case "css":
+                return $$"""
+                /* {{Cite}}. CSS cannot refract; what it can carry is the tint of the liquid over the depth and the sheen. */
+                .pool {
+                  --water-tint: {{RoundTrip}};          /* white after a round trip to a {{C(d, 2)}} m floor */
+                  --water-face: {{C(optics.NormalReflectance, 4)}};      /* reflectance looking straight down */
+                  background: color-mix(in srgb, var(--water-tint) 55%, #6a8fa8);
+                  box-shadow: inset 0 1px 0 rgb(255 255 255 / {{C(optics.NormalReflectance * 6, 3)}});
+                }
+                /* For the motion, draw a canvas with undine-water.frag.glsl behind the content. */
+                """;
+            case "hlsl":
+                return $$"""
+                // {{Cite}}. Constants for UndineWater.hlsl (linked below): call UndineChannel once per channel.
+                static const float3 UNDINE_IOR = float3({{ior}});
+                static const float3 UNDINE_ABSORB_PER_METRE = float3({{alpha}});
+                static const float UNDINE_DEPTH = {{C(d, 2)}};
+                """;
+            case "unity":
+                return $$"""
+                // {{Cite}}
+                // Unity: a subdivided plane with a height texture (R32F, metres) from your simulation or from Undine.Surface.
+                // Shader Graph: Custom Function node in file mode with UndineWater.hlsl (linked below); per channel:
+                //   float2 off; float r;
+                //   float w = UndineChannel(viewDirWS, normalWS, {{C(n.X, 5)}}, {{G(a.X)}}, {{C(d, 2)}}, off, r);   // red; green and blue likewise
+                //   colour.r = r * skyReflection.r + w * SAMPLE_TEXTURE2D(_Floor, sampler_Floor, floorUv + off / _PoolSide).r;
+                // HDRP Lit as a shortcut (no dispersion): Index of Refraction {{C(liquid.IndexD, 4)}}, Absorption Distance {{C(d, 2)}} m,
+                //   Transmittance Color RGB({{att}}) which is exp(-alpha * depth) per channel.
+                static const float3 UNDINE_IOR = float3({{ior}});
+                static const float3 UNDINE_ABSORB_PER_METRE = float3({{alpha}});
+                """;
+            case "unreal":
+                return $$"""
+                // {{Cite}}
+                // Unreal: Translucent material on a plane displaced by the height texture (World Position Offset from the R channel).
+                //   Refraction Method: Index of Refraction; Refraction pin {{C(liquid.IndexD, 4)}}
+                //   Specular pin {{C(optics.NormalReflectance / 0.08, 3)}}   (Specular 0.5 = 4% head-on; this liquid's F0 is {{C(optics.NormalReflectance, 4)}})
+                //   Custom node with UndineWater.hlsl for per-channel refraction and absorption:
+                float3 ior = float3({{ior}});
+                float3 absorbPerMetre = float3({{alpha}});
+                float depthMetres = {{C(d, 2)}};
+                """;
+            case "godot":
+                return $$"""
+                // {{Cite}}. Godot 4: undine_water.gdshader (linked below) on a subdivided PlaneMesh; set these uniforms:
+                shader_parameter/side_metres = 4.0
+                shader_parameter/depth_metres = {{C(d, 2)}}
+                shader_parameter/ior = Vector3({{ior}})
+                shader_parameter/absorb_per_metre = Vector3({{alpha}})
+                # height_texture: an R32F image updated each frame from your simulation or Undine.Surface.Heights
+                """;
+            case "blender":
+                return $$"""
+                {{Cite}}
+                Principled BSDF on the surface mesh (an Ocean modifier or a displaced plane):
+                  IOR                      {{C(liquid.IndexD, 4)}}
+                  Transmission Weight      1.0
+                  Roughness                0.0
+                  Dispersion Abbe Number   {{C(liquid.Optics.AbbeD, 1)}}   (Cycles; Dispersion Scale 1.0 to see it)
+
+                Volume Absorption into the Volume socket (the water body must be a closed mesh):
+                  Density                  {{C(Math.Max(a.X, Math.Max(a.Y, a.Z)), 4)}}   per metre, object in metres
+                  Color                    ({{C(a.X > 0 ? 1 - a.X / Math.Max(a.X, Math.Max(a.Y, a.Z)) : 1, 4)}}, {{C(a.Y > 0 ? 1 - a.Y / Math.Max(a.X, Math.Max(a.Y, a.Z)) : 1, 4)}}, {{C(a.Z > 0 ? 1 - a.Z / Math.Max(a.X, Math.Max(a.Y, a.Z)) : 1, 4)}})
+                  (Cycles absorbs at Density × (1 − Color) per channel; these reproduce α exactly: {{alpha}} per metre)
+
+                Check: {{C(d, 2)}} m of this liquid passes ({{att}}) of white light.
+                """;
+            case "gltf":
+                return $$"""
+                {
+                  "materials": [{
+                    "name": "{{liquid.Name}}",
+                    "pbrMetallicRoughness": { "baseColorFactor": [1, 1, 1, 1], "metallicFactor": 0, "roughnessFactor": 0 },
+                    "extensions": {
+                      "KHR_materials_transmission": { "transmissionFactor": 1 },
+                      "KHR_materials_ior": { "ior": {{C(liquid.IndexD, 4)}} },
+                      "KHR_materials_dispersion": { "dispersion": {{C(20 / liquid.Optics.AbbeD, 4)}} },
+                      "KHR_materials_volume": { "thicknessFactor": {{C(d, 2)}}, "attenuationDistance": {{C(d, 2)}}, "attenuationColor": [{{att}}] }
+                    }
+                  }]
+                }
+                """;
+            case "threejs":
+                return $$"""
+                // {{Cite}}. three.js: the water body as MeshPhysicalMaterial, the surface displaced by your height texture.
+                const water = new THREE.MeshPhysicalMaterial({
+                  transmission: 1,
+                  ior: {{C(liquid.IndexD, 4)}},
+                  dispersion: {{C(20 / liquid.Optics.AbbeD, 4)}},              // 20 / Abbe number
+                  thickness: {{C(d, 2)}},                       // metres, the mesh in metres
+                  attenuationDistance: {{C(d, 2)}},
+                  attenuationColor: new THREE.Color({{att}}),   // exp(-alpha * depth) per channel
+                  roughness: 0,
+                  metalness: 0,
+                });
+                """;
+            case "cssurface":
+                return $$"""
+                // {{Cite}}
+                using System.Numerics;
+                using Undine;
+
+                Liquid liquid = Liquids.{{Identifier(liquid.Name)}};
+                Surface pool = new(cells: 256, sizeMetres: 4, depthMetres: {{C(d, 2)}}, liquid);
+                // c = {{C(Liquid.ShallowWaveSpeed(d), 3)}} m/s, stable substep {{C(pool_step(d), 4)}} s: Step splits a frame into what stability needs.
+                pool.Disturb(xMetres: 2, yMetres: 2, radiusMetres: 0.05, amountMetres: -0.01);
+                pool.Step(1 / 60d);
+                ReadOnlySpan<float> heights = pool.Heights;       // metres, row-major, to upload as R32F
+                Vector3 normal = pool.NormalAt(128, 128);
+                """;
+            case "csoptics":
+                return $$"""
+                // {{Cite}}
+                using System.Numerics;
+                using Undine;
+
+                LiquidOptics optics = new(Liquids.{{Identifier(liquid.Name)}});
+                Vector3 n = optics.IndexRgb;                         // {{ior}}
+                Vector3 alpha = optics.AbsorptionPerMetreRgb;         // {{alpha}} per metre
+                Vector3 r = optics.Reflectance(cosIncident: 1f);      // {{C(optics.NormalReflectance, 4)}} head-on
+                Vector3 through = optics.Transmittance({{C(d, 2)}});   // {{att}}
+                double critical = optics.CriticalAngleDegrees;        // {{C(optics.CriticalAngleDegrees, 1)}}°
+                RefractionKind kind = optics.Refract(Vector3.Normalize(new Vector3(0.5f, -1f, 0f)), Vector3.UnitY, channel: 1, out Vector3 inside);
+                """;
+            default:
+                return $$"""
+                // {{Cite}}
+                using System.Numerics;
+                using Undine;
+
+                Surface pool = new(cells: 256, sizeMetres: 4, depthMetres: {{C(d, 2)}}, Liquids.{{Identifier(liquid.Name)}});
+                pool.Disturb(2, 2, 0.06, -0.03);
+                pool.Step(0.2);
+
+                CausticMap floor = new(256);
+                floor.Build(pool, new LiquidOptics(pool.Liquid), lightDirection: new Vector3(0.3f, -1f, 0.2f), raysPerSide: 512);
+                Vector3 lit = floor[128, 128];        // 1 on open floor, brighter in a caustic line, darker beside it
+                double peak = floor.Peak();
+                """;
+        }
+    }
+
+    private static double pool_step(double d) => Math.Min(4d / 256 / (Liquid.ShallowWaveSpeed(d) * Math.Sqrt(2)), 0.1 * Math.Pow(4d / 256, 2) / 1e-6);
+
+    private static string Identifier(string name) => new(name.Split(' ').Select(w => char.ToUpperInvariant(w[0]) + w[1..]).SelectMany(w => w).ToArray());
+
+    private IEnumerable<(string Name, string Value, string Explain)> Parameters()
+    {
+        Vector3 n = optics.IndexRgb, a = optics.AbsorptionPerMetreRgb;
+        string ior = $"{SiteInfo.Number(n.X, 4)}, {SiteInfo.Number(n.Y, 4)}, {SiteInfo.Number(n.Z, 4)}";
+        string alpha = optics.HasAbsorption ? $"{SiteInfo.Number(a.X, 3)}, {SiteInfo.Number(a.Y, 3)}, {SiteInfo.Number(a.Z, 3)} 1/m" : L["give.x.noabs"];
+        switch (format)
+        {
+            case "css":
+                yield return (L["give.p.tint"], RoundTrip, "give.x.tint");
+                yield return (L["give.p.face"], SiteInfo.Number(optics.NormalReflectance * 100, 2) + "%", "give.x.face");
+                break;
+            case "blender":
+            case "gltf":
+            case "threejs":
+                yield return ("IOR", SiteInfo.Number(liquid.IndexD, 4), "give.x.ior");
+                yield return ("Abbe, dispersion", SiteInfo.Number(liquid.Optics.AbbeD, 1) + ", " + SiteInfo.Number(20 / liquid.Optics.AbbeD, 3), "give.x.abbe");
+                yield return ("α", alpha, "give.x.alpha");
+                yield return (L["give.p.depth"], SiteInfo.Number(depth, 2) + " m", "give.x.depth");
+                break;
+            default:
+                yield return ("n (R, G, B)", ior, "give.x.rgb");
+                yield return ("α", alpha, "give.x.alpha");
+                yield return (L["give.p.depth"], SiteInfo.Number(depth, 2) + " m", "give.x.depth");
+                yield return ("c", SiteInfo.Number(Liquid.ShallowWaveSpeed(depth), 3) + " m/s", "give.x.speed");
+                yield return ("ν", SiteInfo.Number(liquid.KinematicViscosity * 1e6, 3) + " mm²/s", "give.x.visc");
+                yield return (L["give.p.critical"], SiteInfo.Number(optics.CriticalAngleDegrees, 1) + "°", "give.x.critical");
+                break;
+        }
+    }
+
+    private async Task Copy(string text) => await Js.InvokeVoidAsync("caustikonClipboard.copy", text);
+}

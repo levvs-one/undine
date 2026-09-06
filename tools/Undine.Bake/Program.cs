@@ -1,4 +1,4 @@
-// Writes site/data/liquids.json: the numbers the site's shaders take for each liquid, computed by Undine and
+// Writes site/Undine.Site/wwwroot/data/liquids.json: the numbers the site's shaders take for each liquid, computed by Undine and
 // Caustikon here so the page never types a physical constant by hand. Run: dotnet run --project tools/Undine.Bake
 using System.Globalization;
 using System.Numerics;
@@ -7,7 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Undine;
 
-string output = args.Length > 0 ? args[0] : Path.Combine(FindRepository(), "site", "data", "liquids.json");
+string output = args.Length > 0 ? args[0] : Path.Combine(FindRepository(), "site", "Undine.Site", "wwwroot", "data", "liquids.json");
 Directory.CreateDirectory(Path.GetDirectoryName(output)!);
 
 List<LiquidRow> rows = [];

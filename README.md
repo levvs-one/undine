@@ -19,7 +19,7 @@ The site at <https://undine.levvs.cc> is the pool: touch it, change the liquid, 
 | --- | --- |
 | `src/Undine` | The .NET package: `Liquid` and `Liquids`, `Surface` (height field with viscous damping), `LiquidOptics` (indices, Fresnel, absorption from Caustikon), `CausticMap`. |
 | `shaders/` | GLSL ES 3.00 for the surface step, the caustic points and the pool render (what the site runs); an HLSL file for Unity and Unreal; a Godot 4 shader. |
-| `site/` | The static site: WebGL2 pool, the liquid table, the shaders to download. `site/data/liquids.json` is baked by `tools/Undine.Bake`. |
+| `site/Undine.Site/` | The site: Blazor WebAssembly in the Caustikon format. The WebGL2 pool, the liquid table, one "Give Me!" page per craft with the numbers and the shaders. `wwwroot/data/liquids.json` is baked by `tools/Undine.Bake`. |
 | `tests/` | What the physics must keep doing: water's index and its blue over metres, wave speed, a drop spreading, glycerol dying, a flat surface lighting the floor evenly and a ripple focusing it. |
 | `external/caustikon` | Caustikon as a submodule, the source of every optical number. |
 
@@ -29,7 +29,7 @@ The site at <https://undine.levvs.cc> is the pool: touch it, change the liquid, 
 git clone --recurse-submodules https://github.com/levvs-one/undine.git
 dotnet build Undine.slnx -c Release
 dotnet test --project tests/Undine.Tests/Undine.Tests.csproj -c Release -f net10.0
-dotnet run --project tools/Undine.Bake -c Release     # site/data/liquids.json
+dotnet run --project tools/Undine.Bake -c Release     # site/Undine.Site/wwwroot/data/liquids.json
 ```
 
 ## Use

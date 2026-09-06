@@ -1,0 +1,85 @@
+@page "/liquids"
+@using System.Numerics
+@inherits LocalizedComponent
+
+<PageTitle>@L["liquids.title"]</PageTitle>
+<HeadContent>
+    <meta name="description" content="@L["liquids.meta"]" />
+</HeadContent>
+
+<h1>@L["liquids.h1"]</h1>
+<p class="lede">@L["liquids.lede"]</p>
+
+<div class="table-scroll">
+    <table class="compact">
+        <thead>
+            <tr>
+                <th>@L["liquids.col.liquid"]</th>
+                <th class="num">n<sub>d</sub>, ν<sub>d</sub></th>
+                <th class="num">@L["liquids.col.n"]</th>
+                <th class="num">@L["liquids.col.alpha"]</th>
+                <th class="num">@L["liquids.col.density"]</th>
+                <th class="num">@L["liquids.col.visc"]</th>
+                <th class="num">@L["liquids.col.tension"]</th>
+                <th>@L["liquids.col.colours"]</th>
+                <th>@L["liquids.col.source"]</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (Liquid l in Liquids.All)
+            {
+                LiquidOptics o = new(l);
+                Vector3 n = o.IndexRgb, a = o.AbsorptionPerMetreRgb;
+                <tr>
+                    <td>
+                        <strong>@LiquidNames.Of(L, l)</strong><br />
+                        <a href="@("?liquid=" + Uri.EscapeDataString(l.Name))">@L["liquids.open"]</a><br />
+                        <a href="@("https://caustikon.levvs.cc/glass/liquids/" + Uri.EscapeDataString(l.Optics.Name))" rel="noopener">@L["liquids.caustikon"]</a>
+                    </td>
+                    <td class="num">@SiteInfo.Number(l.IndexD, 4), @SiteInfo.Number(l.Optics.AbbeD, 1)</td>
+                    <td class="num">@SiteInfo.Number(n.X, 4), @SiteInfo.Number(n.Y, 4), @SiteInfo.Number(n.Z, 4)</td>
+                    <td class="num">@(o.HasAbsorption ? SiteInfo.Number(a.X, 3) + ", " + SiteInfo.Number(a.Y, 3) + ", " + SiteInfo.Number(a.Z, 3) : "—")</td>
+                    <td class="num">@SiteInfo.Number(l.DensityKgPerM3, 1)</td>
+                    <td class="num">@SiteInfo.Number(l.ViscosityMPaS, l.ViscosityMPaS < 10 ? 3 : 0)</td>
+                    <td class="num">@SiteInfo.Number(l.SurfaceTensionMNPerM, 1)</td>
+                    <td>@Swatch(o.Colour(0.1)) @Swatch(o.Colour(1)) @Swatch(o.Colour(10))</td>
+                    <td class="source">@l.Optics.Provenance.Citation</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+<p>@L["liquids.floor"]</p>
+
+<h2>@L["liquids.speed.h"]</h2>
+<p>@L["liquids.speed.p"]</p>
+<div class="table-scroll">
+    <table class="compact">
+        <thead>
+            <tr>
+                <th>@L["liquids.col.wave"]</th>
+                @foreach (Liquid l in Liquids.All)
+                {
+                    <th class="num">@LiquidNames.Of(L, l)</th>
+                }
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (double wavelength in new[] { 0.005, 0.01, 0.02, 0.05, 0.1, 0.5, 1.0, 5.0 })
+            {
+                <tr>
+                    <td>@SiteInfo.Number(wavelength * 100, wavelength < 0.01 ? 1 : 0) cm</td>
+                    @foreach (Liquid l in Liquids.All)
+                    {
+                        <td class="num">@SiteInfo.Number(l.PhaseSpeed(wavelength, 1.0), 3) m/s</td>
+                    }
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+@code {
+    private static MarkupString Swatch(Caustikon.Glasses.TransmittedColour? colour) =>
+        new(colour is { } c ? $"<span class=\"swatch\" style=\"background:{c.Hex}\"></span> {c.Hex}" : "—");
+}

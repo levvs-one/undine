@@ -1,0 +1,204 @@
+@page "/"
+@using System.Numerics
+@inject IJSRuntime Js
+@inject NavigationManager Navigation
+@inherits LocalizedComponent
+@implements IDisposable
+
+<PageTitle>@L["home.title"]</PageTitle>
+<HeadContent>
+    <meta name="description" content="@L["home.meta"]" />
+</HeadContent>
+
+<h1 class="bench-title">@L["home.h1"]</h1>
+<p class="lede">@L["home.lede"]</p>
+
+<div class="bench-block">
+    <div class="stage">
+        <canvas id="water" class="render-canvas gl water"></canvas>
+        <div class="zoom-buttons">
+            <button type="button" @onclick="@(() => Dolly(0.8))" aria-label="+">+</button>
+            <button type="button" @onclick="@(() => Dolly(1.25))" aria-label="−">−</button>
+        </div>
+    </div>
+    <p class="bench-hint">@(gpu ? (orbit ? L["home.hint.orbit"] : L["home.hint.touch"]) : L["home.nogl"])</p>
+    <div class="readout compact">
+        <div><div class="value">@SiteInfo.Number(WaveSpeed, 2) m/s</div><div class="label">@L["home.r.speed"]</div></div>
+        <div><div class="value">@SiteInfo.Number(liquid.PhaseSpeed(0.02, depth), 2) m/s</div><div class="label">@L["home.r.ripple"]</div></div>
+        <div><div class="value">@SiteInfo.Number(optics.NormalReflectance * 100, 2)%</div><div class="label">@L["home.r.fresnel"]</div></div>
+        <div><div class="value">@SiteInfo.Number(optics.CriticalAngleDegrees, 1)°</div><div class="label">@L["home.r.critical"]</div></div>
+        <div><div class="value">@SiteInfo.Number(liquid.ViscosityMPaS, liquid.ViscosityMPaS < 10 ? 2 : 0) mPa·s</div><div class="label">@L["home.r.visc"]</div></div>
+        <div><div class="value"><span class="swatch" style="background:@RoundTrip"></span> @RoundTrip</div><div class="label">@L["home.r.colour"]</div></div>
+        <div><div class="value">@SiteInfo.Number(StableStep * 1000, 2) ms</div><div class="label">@L["home.r.step"]</div></div>
+        <div><div class="value">@fps</div><div class="label">@L["home.r.fps"]</div></div>
+    </div>
+    <div class="bench-controls">
+        <label class="control">
+            <span>@L["home.liquid"]</span>
+            <select @bind="liquidName">
+                @foreach (Liquid l in Liquids.All)
+                {
+                    <option value="@l.Name">@LiquidNames.Of(L, l)</option>
+                }
+            </select>
+        </label>
+        <RangeField Label="@L["home.depth"]" @bind-Value="depth" Min="0.1" Max="10" Step="0.1" Unit="m" />
+        <RangeField Label="@L["home.side"]" @bind-Value="side" Min="1" Max="20" Step="0.5" Unit="m" />
+        <label class="control">
+            <span>@L["home.floor"]</span>
+            <select @bind="floor">
+                <option value="0">@L["home.floor.tiles"]</option>
+                <option value="1">@L["home.floor.sand"]</option>
+                <option value="2">@L["home.floor.dark"]</option>
+            </select>
+        </label>
+        <div class="control">
+            <label class="check"><input type="checkbox" @bind="orbit" /> @L["home.orbit"]</label>
+            <div class="button-row">
+                <button type="button" @onclick="Drop">@L["home.drop"]</button>
+                <button type="button" @onclick="Calm">@L["home.calm"]</button>
+            </div>
+        </div>
+    </div>
+    <details class="more">
+        <summary>@L["ui.more"]</summary>
+        <div class="bench-controls">
+            <RangeField Label="@L["home.touch"]" @bind-Value="touch" Min="0.005" Max="0.1" Step="0.005" Scale="100" Unit="cm" Decimals="1" />
+            <RangeField Label="@L["home.lamp.az"]" @bind-Value="lampAzimuth" Min="-180" Max="180" Step="1" Unit="°" />
+            <RangeField Label="@L["home.lamp.el"]" @bind-Value="lampElevation" Min="10" Max="89" Step="1" Unit="°" />
+            <RangeField Label="@L["home.lamp"]" @bind-Value="lamp" Min="0" Max="4" Step="0.1" Unit="×" />
+            <RangeField Label="@L["home.exposure"]" @bind-Value="exposure" Min="0.25" Max="4" Step="0.05" Unit="×" />
+            <label class="control">
+                <span>@L["home.cells"]</span>
+                <select @bind="cells">
+                    <option value="128">128 × 128</option>
+                    <option value="256">256 × 256</option>
+                    <option value="512">512 × 512</option>
+                </select>
+            </label>
+        </div>
+    </details>
+</div>
+
+<h2>@L["home.what.h"]</h2>
+<p>@H("home.what.1")</p>
+<p>@H("home.what.2")</p>
+<p>@H("home.what.3")</p>
+<p>@H("home.what.4")</p>
+
+@code {
+    private Liquid liquid = Liquids.Water;
+    private LiquidOptics optics = new(Liquids.Water);
+    private double depthValue = 1.2, sideValue = 4, lampAzimuthValue = 35, lampElevationValue = 55, lampValue = 1, exposureValue = 1, touchValue = 0.03;
+    private int floorValue, cellsValue = 256;
+    private bool orbitValue, gpu = true, rendered, pushQueued;
+    private int fps;
+    private System.Threading.Timer? fpsTimer;
+
+    private string liquidName { get => liquid.Name; set { liquid = Liquids.Find(value) ?? Liquids.Water; optics = new LiquidOptics(liquid); Push(); } }
+    private double depth { get => depthValue; set { depthValue = value; Push(); } }
+    private double side { get => sideValue; set { sideValue = value; Push(); } }
+    private double lampAzimuth { get => lampAzimuthValue; set { lampAzimuthValue = value; Push(); } }
+    private double lampElevation { get => lampElevationValue; set { lampElevationValue = value; Push(); } }
+    private double lamp { get => lampValue; set { lampValue = value; Push(); } }
+    private double exposure { get => exposureValue; set { exposureValue = value; Push(); } }
+    private double touch { get => touchValue; set { touchValue = value; Push(); } }
+    private int floor { get => floorValue; set { floorValue = value; Push(); } }
+    private int cells { get => cellsValue; set { cellsValue = value; Push(); } }
+    private bool orbit { get => orbitValue; set { orbitValue = value; _ = Js.InvokeVoidAsync("undineWater.orbit", "water", value); } }
+
+    private double WaveSpeed => Liquid.ShallowWaveSpeed(depthValue);
+
+    private double StableStep => Math.Min(sideValue / cellsValue / (WaveSpeed * Math.Sqrt(2)), 0.1 * Math.Pow(sideValue / cellsValue, 2) / Math.Max(1e-12, liquid.KinematicViscosity));
+
+    // White light down to the floor and back, from the three absorption coefficients.
+    private string RoundTrip
+    {
+        get
+        {
+            Vector3 t = optics.Transmittance(2 * depthValue);
+            static int Compand(float v) => (int)Math.Round(255 * (v <= 0.0031308f ? 12.92f * v : 1.055f * MathF.Pow(v, 1f / 2.4f) - 0.055f));
+            return $"#{Compand(t.X):x2}{Compand(t.Y):x2}{Compand(t.Z):x2}";
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        liquid = SiteInfo.ReadLiquidQuery(Navigation, Liquids.Water);
+        optics = new LiquidOptics(liquid);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            rendered = true;
+            await PushNowAsync();
+            fpsTimer = new System.Threading.Timer(async _ => await ReadFpsAsync(), null, 1000, 1000);
+            return;
+        }
+
+        if (pushQueued)
+        {
+            pushQueued = false;
+            await PushNowAsync();
+        }
+    }
+
+    private void Push()
+    {
+        if (rendered)
+        {
+            pushQueued = true;
+        }
+    }
+
+    private async Task PushNowAsync()
+    {
+        var spec = new
+        {
+            ior = new[] { optics.IndexRgb.X, optics.IndexRgb.Y, optics.IndexRgb.Z },
+            alpha = new[] { optics.AbsorptionPerMetreRgb.X, optics.AbsorptionPerMetreRgb.Y, optics.AbsorptionPerMetreRgb.Z },
+            kinematicViscosity = liquid.KinematicViscosity,
+            depth = depthValue,
+            side = sideValue,
+            cells = cellsValue,
+            floor = floorValue,
+            lampAzimuth = lampAzimuthValue,
+            lampElevation = lampElevationValue,
+            lamp = lampValue,
+            exposure = exposureValue,
+            touch = touchValue,
+        };
+        bool ok = await Js.InvokeAsync<bool>("undineWater.render", "water", spec);
+        if (!ok && gpu)
+        {
+            gpu = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ReadFpsAsync()
+    {
+        try
+        {
+            int value = await Js.InvokeAsync<int>("undineWater.fps", "water");
+            if (value != fps)
+            {
+                fps = value;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private Task Drop() => Js.InvokeVoidAsync("undineWater.drop", "water").AsTask();
+
+    private Task Calm() => Js.InvokeVoidAsync("undineWater.calm", "water").AsTask();
+
+    private Task Dolly(double factor) => Js.InvokeVoidAsync("undineWater.dolly", "water", factor).AsTask();
+
+    public void Dispose() => fpsTimer?.Dispose();
+}

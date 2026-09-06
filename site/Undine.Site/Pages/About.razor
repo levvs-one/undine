@@ -1,0 +1,52 @@
+@page "/about"
+@inherits LocalizedComponent
+
+<PageTitle>@L["about.title"]</PageTitle>
+<HeadContent>
+    <meta name="description" content="@L["about.meta"]" />
+</HeadContent>
+
+<h1>@L["about.h1"]</h1>
+<p class="lede">@L["about.lede"]</p>
+
+<h2>@L["about.what.h"]</h2>
+<p>@L["about.what.p1"]</p>
+
+<h2>@L["about.map.h"]</h2>
+<dl class="kv map">
+    <dt><a href="">@L["nav.water"]</a></dt><dd>@L["about.map.water"]</dd>
+    <dt><a href="liquids">@L["nav.liquids"]</a></dt><dd>@L["about.map.liquids"]</dd>
+    <dt><a href="give/design">@L["nav.give"]</a></dt><dd>@L["about.map.give"]</dd>
+</dl>
+
+<h2>@L["about.install.h"]</h2>
+<pre><code>git clone --recurse-submodules https://github.com/levvs-one/undine.git
+dotnet build Undine.slnx -c Release</code></pre>
+<p>@L["about.install.p"]</p>
+<pre><code>using System.Numerics;
+using Undine;
+
+Liquid water = Liquids.Water;                       // optics from Caustikon, mechanics from the CRC Handbook
+LiquidOptics optics = new(water);
+Vector3 n = optics.IndexRgb;                        // @SiteInfo.Number(new LiquidOptics(Liquids.Water).IndexRgb.X, 4), @SiteInfo.Number(new LiquidOptics(Liquids.Water).IndexRgb.Y, 4), @SiteInfo.Number(new LiquidOptics(Liquids.Water).IndexRgb.Z, 4)
+Vector3 tenMetres = optics.Transmittance(10);       // what white becomes after ten metres: blue
+
+Surface pool = new(cells: 256, sizeMetres: 4, depthMetres: 1.2, water);
+pool.Disturb(xMetres: 2, yMetres: 2, radiusMetres: 0.05, amountMetres: -0.01);   // a drop
+pool.Step(1 / 60d);                                 // substeps as stability requires
+Vector3 normal = pool.NormalAt(128, 128);
+
+CausticMap floor = new(256);
+floor.Build(pool, optics, lightDirection: new Vector3(0.3f, -1f, 0.2f), raysPerSide: 512);</code></pre>
+
+<h2>@L["about.model.h"]</h2>
+<p>@L["about.model.p"]</p>
+
+<h2>@L["about.data.h"]</h2>
+<p>@L["about.data.p"]</p>
+
+<h2>@L["about.next.h"]</h2>
+<p>@L["about.next.p"]</p>
+
+<h2>@L["about.author.h"]</h2>
+<p>@H("about.author.p")</p>

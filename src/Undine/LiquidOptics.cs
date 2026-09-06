@@ -33,8 +33,8 @@ public sealed class LiquidOptics
     /// <summary>Beer–Lambert absorption per metre at the same wavelengths, from the tabulated k; zero when the entry has no k table.</summary>
     public Vector3 AbsorptionPerMetreRgb { get; }
 
-    /// <summary>Whether the catalog entry carries an absorption table; without one the liquid is treated as perfectly clear.</summary>
-    public bool HasAbsorption => Liquid.Optics.Extinction is not null;
+    /// <summary>Whether the catalog entry carries an absorption table that covers the visible; without one the liquid is treated as perfectly clear.</summary>
+    public bool HasAbsorption => Liquid.Optics.Extinction is { } e && e.MinimumWavelengthNanometers <= ChannelWavelengths[2] && e.MaximumWavelengthNanometers >= ChannelWavelengths[0];
 
     /// <summary>Unpolarized reflectance looking straight down at the surface, ((n−1)/(n+1))² at the green channel.</summary>
     public double NormalReflectance => Dielectric.NormalReflectance(1f, IndexRgb.Y);
@@ -80,7 +80,7 @@ public sealed class LiquidOptics
             return 0f;
         }
 
-        double clamped = Math.Clamp(wavelength, extinction.MinimumWavelengthNanometers, extinction.MaximumWavelengthNanometers);
-        return extinction.AbsorptionCoefficient(clamped, out double perMetre) == DispersionStatus.Success ? (float)perMetre : 0f;
+        // A table that stops short of the visible says nothing about it; the edge value would be an infrared number.
+        return extinction.AbsorptionCoefficient(wavelength, out double perMetre) == DispersionStatus.Success ? (float)perMetre : 0f;
     }
 }
