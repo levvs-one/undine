@@ -147,8 +147,11 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
             gl.uniform1f(sim.u.uDt, dt);
             gl.uniform1f(sim.u.uWaveSpeed, waveSpeed());
             gl.uniform1f(sim.u.uViscosity, state.liquid.kinematicViscosity);
-            if (state.touch) {
-                gl.uniform2f(sim.u.uTouch, state.touch.u, state.touch.v);
+            const now = performance.now();
+            drops = drops.filter(d => d.until > now);
+            const push = state.touch || drops[0];
+            if (push) {
+                gl.uniform2f(sim.u.uTouch, push.u, push.v);
                 gl.uniform1f(sim.u.uTouchRadius, Math.max(3, 0.05 / cell()));
                 // A finger pushes the surface down about three centimetres per tenth of a second.
                 gl.uniform1f(sim.u.uTouchAmount, -0.03 * dt / 0.1);
@@ -383,11 +386,15 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
     document.getElementById("floor").addEventListener("change", e => { state.floor = parseInt(e.target.value, 10); });
     document.getElementById("cells").addEventListener("change", e => { state.cells = parseInt(e.target.value, 10); resetSurface(); readout(); });
     document.getElementById("orbit").addEventListener("change", e => { state.orbit = e.target.checked; status.textContent = strings.t(state.orbit ? "hint.orbit" : "hint.touch"); });
-    document.getElementById("drop").addEventListener("click", () => {
-        const u = state.cells * (0.3 + 0.4 * Math.random()), v = state.cells * (0.3 + 0.4 * Math.random());
-        state.touch = { u, v };
-        setTimeout(() => { if (state.pointers.size === 0) state.touch = null; }, 60);
-    });
+    // A drop: a short push somewhere in the middle of the pool. Three of them at the start so the water is never still.
+    let drops = [];
+    function drop() {
+        drops.push({ u: state.cells * (0.25 + 0.5 * Math.random()), v: state.cells * (0.25 + 0.5 * Math.random()), until: performance.now() + 120 });
+    }
+    document.getElementById("drop").addEventListener("click", drop);
+    setTimeout(drop, 300);
+    setTimeout(drop, 900);
+    setTimeout(drop, 1700);
     document.getElementById("calm").addEventListener("click", resetSurface);
     document.getElementById("zoom-in").addEventListener("click", () => { state.distance = Math.max(2, state.distance * 0.8); });
     document.getElementById("zoom-out").addEventListener("click", () => { state.distance = Math.min(16, state.distance * 1.25); });
