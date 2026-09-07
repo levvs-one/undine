@@ -61,6 +61,8 @@
 
 <h3>@L["give.sec.files"]</h3>
 <dl class="kv">
+    <dt><a href="shaders/undine-water-fft.frag.glsl" download>undine-water-fft.frag.glsl</a></dt><dd>@L["give.file.fft"]</dd>
+    <dt><a href="shaders/undine-water-evolve.frag.glsl" download>undine-water-evolve.frag.glsl</a></dt><dd>@L["give.file.evolve"]</dd>
     <dt><a href="shaders/undine-water-sim.frag.glsl" download>undine-water-sim.frag.glsl</a></dt><dd>@L["give.file.sim"]</dd>
     <dt><a href="shaders/undine-water-caustics.vert.glsl" download>undine-water-caustics.vert.glsl</a></dt><dd>@L["give.file.caustic"]</dd>
     <dt><a href="shaders/undine-water.frag.glsl" download>undine-water.frag.glsl</a></dt><dd>@L["give.file.render"]</dd>
@@ -187,8 +189,8 @@
                 const vec3 uIor = vec3({{ior}});        // n at 610, 550, 465 nm
                 const vec3 uAlpha = vec3({{alpha}});    // absorption per metre, same wavelengths
                 const float uDepth = {{C(d, 2)}};                            // metres to the floor
-                const float uWaveSpeed = {{C(Liquid.ShallowWaveSpeed(d), 4)}};  // sqrt(g * depth), m/s
-                const float uViscosity = {{G(liquid.KinematicViscosity)}};       // kinematic, m^2/s
+                const float uTension = {{G(liquid.SurfaceTensionMNPerM * 1e-3 / liquid.DensityKgPerM3)}};   // sigma / rho, m^3/s^2, the capillary term of omega(k)
+                const float uViscosity = {{G(liquid.KinematicViscosity)}};       // kinematic, m^2/s: each mode decays as 2 nu k^2
                 """;
             case "css":
                 return $$"""
@@ -293,10 +295,10 @@
                 using Undine;
 
                 Liquid liquid = Liquids.{{Identifier(liquid.Name)}};
-                Surface pool = new(cells: 256, sizeMetres: 4, depthMetres: {{C(d, 2)}}, liquid);
-                // c = {{C(Liquid.ShallowWaveSpeed(d), 3)}} m/s, stable substep {{C(pool_step(d), 4)}} s: Step splits a frame into what stability needs.
+                Surface pool = new(cells: 256, sizeMetres: 4, depthMetres: {{C(d, 2)}}, liquid, dampingPerSecond: 0.3);
+                // Every wavelength at its own speed: long waves at up to {{C(Liquid.ShallowWaveSpeed(d), 3)}} m/s, a 20 cm ripple at {{C(liquid.PhaseSpeed(0.2, d), 3)}} m/s.
                 pool.Disturb(xMetres: 2, yMetres: 2, radiusMetres: 0.05, amountMetres: -0.01);
-                pool.Step(1 / 60d);
+                pool.Step(1 / 60d);                                  // exact for any dt: no substeps, no stability limit
                 ReadOnlySpan<float> heights = pool.Heights;       // metres, row-major, to upload as R32F
                 Vector3 normal = pool.NormalAt(128, 128);
                 """;
@@ -331,8 +333,6 @@
                 """;
         }
     }
-
-    private static double pool_step(double d) => Math.Min(4d / 256 / (Liquid.ShallowWaveSpeed(d) * Math.Sqrt(2)), 0.1 * Math.Pow(4d / 256, 2) / 1e-6);
 
     private static string Identifier(string name) => new(name.Split(' ').Select(w => char.ToUpperInvariant(w[0]) + w[1..]).SelectMany(w => w).ToArray());
 

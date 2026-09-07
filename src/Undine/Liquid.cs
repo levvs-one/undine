@@ -37,9 +37,18 @@ public sealed record Liquid(
     public double PhaseSpeed(double wavelengthMetres, double depthMetres)
     {
         double k = 2 * Math.PI / Math.Max(1e-6, wavelengthMetres);
+        return AngularFrequency(k, depthMetres) / k;
+    }
+
+    /// <summary>
+    /// Angular frequency of a surface wave with wavenumber <paramref name="k"/> (radians per metre) on a layer
+    /// <paramref name="depthMetres"/> deep: ω² = (g·k + σk³/ρ)·tanh(k·h). This is the dispersion relation <see cref="Surface"/> runs on.
+    /// </summary>
+    public double AngularFrequency(double k, double depthMetres)
+    {
         double sigma = SurfaceTensionMNPerM * 1e-3;
-        double c2 = (9.80665 / k + sigma * k / DensityKgPerM3) * Math.Tanh(k * Math.Max(1e-6, depthMetres));
-        return Math.Sqrt(c2);
+        double omega2 = (9.80665 * k + sigma * k * k * k / DensityKgPerM3) * Math.Tanh(k * Math.Max(1e-6, depthMetres));
+        return Math.Sqrt(Math.Max(0d, omega2));
     }
 }
 

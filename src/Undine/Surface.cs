@@ -3,62 +3,58 @@ using System.Numerics;
 namespace Undine;
 
 /// <summary>
-/// A liquid surface as a height field on a square grid: the linear wave equation for long waves on a layer of the
-/// given depth, with viscous damping. It is what runs on the GPU in the site and in the shipped shaders; this is the
-/// same scheme on the CPU, for tools, tests and engines that want the heights on the processor.
+/// A liquid surface as a height field on a square grid with the liquid's own dispersion: every wavelength runs at
+/// its own speed, long gravity waves fast, short ones slow, capillary ripples fast again, and every wavelength is
+/// damped by viscosity at its own rate. It is what runs on the GPU in the site and in the shipped shaders; this is
+/// the same scheme on the CPU, for tools, tests and engines that want the heights on the processor.
 /// </summary>
 /// <remarks>
 /// State per cell: height above the rest level and vertical velocity, both in metres and metres per second.
-/// Each step: v += c²∇²h·dt + ν∇²v·dt, then h += v·dt, with c = √(g·depth) and ν the kinematic viscosity. The scheme
-/// is stable while dt ≤ dx / (c·√2); <see cref="Step"/> splits a longer dt into as many substeps as that needs.
-/// Boundaries are free (Neumann): waves reflect off the edges as they would off a pool wall.
+/// A step is exact in the linear theory: the field is mirrored to twice its size so the walls reflect, transformed
+/// with <see cref="Spectrum"/>, and each mode k is advanced as the damped oscillator ḧ = −ω²h − (2νk² + γ)ḣ with
+/// ω² = (g·k + σk³/ρ)·tanh(k·h), solved in closed form, and transformed back. There is no stability limit and no
+/// substep; the mean height is held at zero, which is the volume of the liquid staying what it is.
 /// </remarks>
 public sealed class Surface
 {
     private readonly float[] height;
     private readonly float[] velocity;
-    private readonly float[] scratch;
+    private readonly float[] re;
+    private readonly float[] im;
 
-    /// <param name="cells">Cells per side; the grid is square.</param>
+    /// <param name="cells">Cells per side, a power of two; the grid is square.</param>
     /// <param name="sizeMetres">Physical side of the grid, metres.</param>
     /// <param name="depthMetres">Depth of the layer at rest, metres.</param>
-    /// <param name="liquid">The liquid; its kinematic viscosity damps the motion.</param>
-    /// <param name="wavelengthMetres">
-    /// The wavelength the field is tuned to: it runs at the liquid's phase speed for that wavelength and depth, from
-    /// the full gravity–capillary dispersion relation. Null runs it at the long-wave speed √(g·depth).
-    /// </param>
+    /// <param name="liquid">The liquid; its surface tension, density and viscosity shape and damp the waves.</param>
     /// <param name="dampingPerSecond">
     /// Decay of the velocity beyond viscosity, 1/s: what a pool's rim and surface film take out of the motion. Zero
     /// leaves viscosity alone, which on water lets a ripple ring for minutes.
     /// </param>
-    public Surface(int cells, double sizeMetres, double depthMetres, Liquid liquid, double? wavelengthMetres = null, double dampingPerSecond = 0d)
+    public Surface(int cells, double sizeMetres, double depthMetres, Liquid liquid, double dampingPerSecond = 0d)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(cells, 4);
+        if ((cells & (cells - 1)) != 0)
+        {
+            throw new ArgumentException("Cells per side must be a power of two.", nameof(cells));
+        }
+
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sizeMetres);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(depthMetres);
         ArgumentNullException.ThrowIfNull(liquid);
+        ArgumentOutOfRangeException.ThrowIfNegative(dampingPerSecond);
         Cells = cells;
         SizeMetres = sizeMetres;
         DepthMetres = depthMetres;
         Liquid = liquid;
-        if (wavelengthMetres is { } wavelength)
-        {
-            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(wavelength);
-        }
-
-        ArgumentOutOfRangeException.ThrowIfNegative(dampingPerSecond);
-        WavelengthMetres = wavelengthMetres;
         DampingPerSecond = dampingPerSecond;
         height = new float[cells * cells];
         velocity = new float[cells * cells];
-        scratch = new float[cells * cells];
+        re = new float[4 * cells * cells];
+        im = new float[4 * cells * cells];
     }
 
     /// <summary>Cells per side.</summary>
     public int Cells { get; }
-
-    /// <summary>The wavelength the field runs at the speed of, or null for long waves.</summary>
-    public double? WavelengthMetres { get; }
 
     /// <summary>Decay of the velocity beyond viscosity, 1/s.</summary>
     public double DampingPerSecond { get; }
@@ -75,24 +71,21 @@ public sealed class Surface
     /// <summary>Cell size, metres.</summary>
     public double CellMetres => SizeMetres / Cells;
 
-    /// <summary>The speed the field runs at, m/s: the phase speed of <see cref="WavelengthMetres"/>, or √(g·depth) for long waves.</summary>
-    public double WaveSpeed => WavelengthMetres is { } wavelength ? Liquid.PhaseSpeed(wavelength, DepthMetres) : Liquid.ShallowWaveSpeed(DepthMetres);
+    /// <summary>Long-wave speed √(g·depth), m/s; every shorter wave runs at <see cref="Liquid.PhaseSpeed"/>.</summary>
+    public double WaveSpeed => Liquid.ShallowWaveSpeed(DepthMetres);
 
-    /// <summary>
-    /// The substep the integrator uses, s: four fifths of the smaller of the wave's CFL bound cell/(c√2) and the explicit
-    /// diffusion bound 0.1·cell²/ν. At the wave bound itself the checkerboard mode is marginal and grows under any forcing.
-    /// </summary>
-    public double StableStep => 0.8 * Math.Min(CellMetres / (WaveSpeed * Math.Sqrt(2d)), 0.1 * CellMetres * CellMetres / Math.Max(1e-12, Liquid.KinematicViscosity));
-
-    /// <summary>Height above rest at a cell, metres.</summary>
+    /// <summary>Height at a cell, metres above the rest level.</summary>
     public float HeightAt(int x, int y) => height[Index(x, y)];
 
-    /// <summary>The height field, row-major, metres. Read-only view; use <see cref="Disturb"/> to change it.</summary>
+    /// <summary>All heights, row-major, metres.</summary>
     public ReadOnlySpan<float> Heights => height;
 
-    /// <summary>Pushes the surface down (negative <paramref name="amountMetres"/>) or up over a Gaussian of the given radius, as a touch or a drop does.</summary>
-    /// <param name="xMetres">Position from the grid's left edge.</param>
-    /// <param name="yMetres">Position from the grid's near edge.</param>
+    /// <summary>All vertical velocities, row-major, m/s.</summary>
+    public ReadOnlySpan<float> Velocities => velocity;
+
+    /// <summary>Adds a Gaussian bump: a drop, a finger, a stone.</summary>
+    /// <param name="xMetres">Centre along x, metres from the grid's edge.</param>
+    /// <param name="yMetres">Centre along y, metres from the grid's edge.</param>
     /// <param name="radiusMetres">Standard deviation of the bump.</param>
     /// <param name="amountMetres">Peak displacement.</param>
     public void Disturb(double xMetres, double yMetres, double radiusMetres, double amountMetres)
@@ -111,67 +104,117 @@ public sealed class Surface
         }
     }
 
-    /// <summary>Advances the surface by <paramref name="seconds"/>, in as many substeps as stability requires.</summary>
+    /// <summary>Advances the surface by <paramref name="seconds"/>: one exact step of the linear evolution.</summary>
     public void Step(double seconds)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(seconds);
-        int substeps = Math.Max(1, (int)Math.Ceiling(seconds / StableStep));
-        float dt = (float)(seconds / substeps);
-        for (int i = 0; i < substeps; i++)
+        int n = Cells, m = 2 * n;
+        // Mirror into twice the size: an even field has no jump at the walls, so waves reflect there.
+        for (int y = 0; y < m; y++)
         {
-            Substep(dt);
+            int sy = y < n ? y : m - 1 - y;
+            for (int x = 0; x < m; x++)
+            {
+                int sx = x < n ? x : m - 1 - x;
+                int source = Index(sx, sy);
+                re[y * m + x] = height[source];
+                im[y * m + x] = velocity[source];
+            }
         }
-    }
 
-    private void Substep(float dt)
-    {
-        int n = Cells;
-        float cell = (float)CellMetres;
-        float c2 = (float)(WaveSpeed * WaveSpeed) / (cell * cell);
-        float nu = (float)Liquid.KinematicViscosity / (cell * cell);
-        float decay = (float)Math.Exp(-DampingPerSecond * dt);
-        // Laplacian of the height drives the velocity; Laplacian of the velocity is the viscous term.
+        Spectrum.Transform(re, im, m, inverse: false);
+        Evolve(seconds, m);
+        Spectrum.Transform(re, im, m, inverse: true);
         for (int y = 0; y < n; y++)
         {
             for (int x = 0; x < n; x++)
             {
-                int i = Index(x, y);
-                float lapH = Laplacian(height, x, y);
-                float lapV = Laplacian(velocity, x, y);
-                scratch[i] = (velocity[i] + (c2 * lapH + nu * lapV) * dt) * decay;
+                height[Index(x, y)] = re[y * m + x];
+                velocity[Index(x, y)] = im[y * m + x];
             }
-        }
-
-        for (int i = 0; i < scratch.Length; i++)
-        {
-            velocity[i] = scratch[i];
-            height[i] += velocity[i] * dt;
         }
     }
 
-    private float Laplacian(float[] field, int x, int y)
+    // Z = H + iV holds both real spectra; each is recovered from Z(k) and Z(−k), rotated, decayed and put back.
+    private void Evolve(double dt, int m)
     {
-        int n = Cells;
-        float centre = field[Index(x, y)];
-        float left = field[Index(Math.Max(0, x - 1), y)], right = field[Index(Math.Min(n - 1, x + 1), y)];
-        float down = field[Index(x, Math.Max(0, y - 1))], up = field[Index(x, Math.Min(n - 1, y + 1))];
-        return left + right + down + up - 4f * centre;
+        double dk = 2 * Math.PI / (m * CellMetres);
+        double nu = Liquid.KinematicViscosity;
+        for (int j = 0; j < m; j++)
+        {
+            int jm = (m - j) % m;
+            double ky = (j < m / 2 ? j : j - m) * dk;
+            for (int i = 0; i < m; i++)
+            {
+                int im2 = (m - i) % m;
+                // Each pair (k, −k) is handled once, from the member that comes first in memory.
+                if (jm * m + im2 < j * m + i)
+                {
+                    continue;
+                }
+
+                int a = j * m + i, b = jm * m + im2;
+                double kx = (i < m / 2 ? i : i - m) * dk;
+                double k = Math.Sqrt(kx * kx + ky * ky);
+                double zr = re[a], zi = im[a], wr = re[b], wi = im[b];
+                // H = (Z + conj(W))/2, V = (Z − conj(W))/(2i).
+                double hr = 0.5 * (zr + wr), hi = 0.5 * (zi - wi);
+                double vr = 0.5 * (zi + wi), vi = -0.5 * (zr - wr);
+                if (k == 0)
+                {
+                    hr = hi = vr = vi = 0;
+                }
+                else
+                {
+                    // The damped oscillator ḧ = −ω²h − 2βḣ, solved exactly over dt: under-, over- and critically damped alike.
+                    double omega = Liquid.AngularFrequency(k, DepthMetres);
+                    double beta = nu * k * k + 0.5 * DampingPerSecond;
+                    double omega2 = omega * omega;
+                    double discriminant = omega2 - beta * beta;
+                    double c, s;
+                    if (discriminant > 1e-12)
+                    {
+                        double w = Math.Sqrt(discriminant);
+                        c = Math.Cos(w * dt);
+                        s = Math.Sin(w * dt) / w;
+                    }
+                    else if (discriminant < -1e-12)
+                    {
+                        double w = Math.Sqrt(-discriminant);
+                        c = Math.Cosh(w * dt);
+                        s = Math.Sinh(w * dt) / w;
+                    }
+                    else
+                    {
+                        c = 1;
+                        s = dt;
+                    }
+
+                    double decay = Math.Exp(-beta * dt);
+                    double nhr = decay * (hr * c + (vr + beta * hr) * s), nhi = decay * (hi * c + (vi + beta * hi) * s);
+                    double nvr = decay * (vr * c - (omega2 * hr + beta * vr) * s), nvi = decay * (vi * c - (omega2 * hi + beta * vi) * s);
+                    (hr, hi, vr, vi) = (nhr, nhi, nvr, nvi);
+                }
+
+                // Z' = H' + iV' at k, and its partner at −k from the conjugate symmetry of real fields.
+                re[a] = (float)(hr - vi);
+                im[a] = (float)(hi + vr);
+                re[b] = (float)(hr + vi);
+                im[b] = (float)(-hi + vr);
+            }
+        }
     }
 
     /// <summary>Unit normal of the surface at a cell, y up, from central differences of the height.</summary>
     public Vector3 NormalAt(int x, int y)
     {
-        int n = Cells;
         float cell = (float)CellMetres;
-        float dhdx = (height[Index(Math.Min(n - 1, x + 1), y)] - height[Index(Math.Max(0, x - 1), y)]) / (2f * cell);
-        float dhdz = (height[Index(x, Math.Min(n - 1, y + 1))] - height[Index(x, Math.Max(0, y - 1))]) / (2f * cell);
-        return Vector3.Normalize(new Vector3(-dhdx, 1f, -dhdz));
+        float left = height[Index(Math.Max(0, x - 1), y)], right = height[Index(Math.Min(Cells - 1, x + 1), y)];
+        float down = height[Index(x, Math.Max(0, y - 1))], up = height[Index(x, Math.Min(Cells - 1, y + 1))];
+        return Vector3.Normalize(new Vector3(-(right - left) / (2f * cell), 1f, -(up - down) / (2f * cell)));
     }
 
-    /// <summary>The vertical velocity field, row-major, metres per second.</summary>
-    public ReadOnlySpan<float> Velocities => velocity;
-
-    /// <summary>Sum of h² over the grid: how far the surface is from rest.</summary>
+    /// <summary>Root mean square of the height, metres: how far the surface is from flat.</summary>
     public double Displacement()
     {
         double sum = 0;
@@ -180,10 +223,10 @@ public sealed class Surface
             sum += (double)h * h;
         }
 
-        return sum;
+        return Math.Sqrt(sum / height.Length);
     }
 
-    /// <summary>Sum of v² over the grid: how much the surface is moving.</summary>
+    /// <summary>Root mean square of the vertical velocity, m/s: how much the surface is moving.</summary>
     public double Motion()
     {
         double sum = 0;
@@ -192,16 +235,16 @@ public sealed class Surface
             sum += (double)v * v;
         }
 
-        return sum;
+        return Math.Sqrt(sum / velocity.Length);
     }
 
-    /// <summary>Largest |h| on the grid, metres.</summary>
+    /// <summary>The largest |height| on the grid, metres.</summary>
     public float PeakHeight()
     {
         float peak = 0f;
         foreach (float h in height)
         {
-            peak = MathF.Max(peak, MathF.Abs(h));
+            peak = Math.Max(peak, Math.Abs(h));
         }
 
         return peak;

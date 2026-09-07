@@ -36,19 +36,19 @@ public sealed class SurfaceTests
     [TestMethod]
     public void ADropSpreadsIntoARingAndNeverGrows()
     {
-        Surface surface = new(96, 2.0, 0.5, Liquids.Water);
+        Surface surface = new(128, 2.0, 0.5, Liquids.Water);
         surface.Disturb(1.0, 1.0, 0.05, -0.01);
         float initial = surface.PeakHeight();
-        Assert.IsTrue(surface.HeightAt(48, 48) < -0.005);
+        Assert.IsTrue(surface.HeightAt(64, 64) < -0.005);
         for (int i = 0; i < 40; i++)
         {
-            surface.Step(0.01);
+            surface.Step(0.02);
             Assert.IsTrue(surface.PeakHeight() <= initial * 1.05f, $"the surface grew at step {i}: {surface.PeakHeight()} > {initial}");
         }
 
         // The dip has spread into a ring: ten cells out the surface moves, and the centre has recovered most of the way.
-        Assert.IsTrue(MathF.Abs(surface.HeightAt(48 + 10, 48)) > 1e-5f, "the wave has not reached ten cells out");
-        Assert.IsTrue(surface.HeightAt(48, 48) > -0.004f, "the centre has not recovered");
+        Assert.IsTrue(MathF.Abs(surface.HeightAt(64 + 10, 64)) > 1e-5f, "the wave has not reached ten cells out");
+        Assert.IsTrue(surface.HeightAt(64, 64) > -0.004f, "the centre has not recovered");
     }
 
     [TestMethod]
@@ -64,30 +64,54 @@ public sealed class SurfaceTests
 
         double water = MotionAfterHalfASecond(Liquids.Water);
         double glycerol = MotionAfterHalfASecond(Liquids.Glycerol);
-        // Viscosity damps shear, so a bump on glycerol creeps rather than rings; a quarter of water's motion is a generous bound.
-        Assert.IsTrue(glycerol < water * 0.25, $"water still moves at {water:E2}, glycerol at {glycerol:E2}");
+        // Viscosity damps each wave as 2νk²: the short components of the bump are gone within the half second, the long
+        // ones outlive it, so glycerol keeps a fraction of water's motion rather than none.
+        Assert.IsTrue(glycerol < water * 0.5, $"water still moves at {water:E2}, glycerol at {glycerol:E2}");
     }
 
     [TestMethod]
-    public void ATunedFieldRunsAtThePhaseSpeedOfItsWavelengthAndDampingTakesMotionOut()
+    public void EachWavelengthRunsAtItsOwnFrequencyAndDampingTakesMotionOut()
     {
-        // A 16 cm ripple on 1.2 m of water is a gravity wave in deep water, far slower than the long-wave limit.
-        Surface tuned = new(64, 1.0, 1.2, Liquids.Water, wavelengthMetres: 0.16);
-        Assert.AreEqual(Liquids.Water.PhaseSpeed(0.16, 1.2), tuned.WaveSpeed, 1e-12);
-        Assert.IsTrue(tuned.WaveSpeed < 0.6 && tuned.WaveSpeed > 0.4, $"16 cm ripple at {tuned.WaveSpeed:F3} m/s");
-        Assert.IsTrue(tuned.WaveSpeed < Liquid.ShallowWaveSpeed(1.2) / 5);
+        // A standing wave of one wavelength across the pool: after one period of ω(k) it is back where it started,
+        // and half a period later it is upside down. 50 cm on 1,2 m of water is a deep-water gravity wave.
+        Surface surface = new(64, 2.0, 1.2, Liquids.Water);
+        double wavelength = 0.5, k = 2 * Math.PI / wavelength;
+        double period = 2 * Math.PI / Liquids.Water.AngularFrequency(k, 1.2);
+        Assert.AreEqual(2 * Math.PI / Math.Sqrt(9.80665 * k), period, period * 0.01);
+        float[] start = new float[64 * 64];
+        for (int y = 0; y < 64; y++)
+        {
+            for (int x = 0; x < 64; x++)
+            {
+                start[y * 64 + x] = 0.01f * MathF.Cos((float)(k * (x + 0.5) * surface.CellMetres));
+            }
+        }
+
+        for (int y = 0; y < 64; y++)
+        {
+            for (int x = 0; x < 64; x++)
+            {
+                surface.Disturb((x + 0.5) * surface.CellMetres, (y + 0.5) * surface.CellMetres, 1e-3, start[y * 64 + x]);
+            }
+        }
+
+        surface.Step(period / 2);
+        Assert.IsTrue(surface.HeightAt(0, 32) < -0.009f, $"half a period later the crest should be a trough: {surface.HeightAt(0, 32)}");
+        surface.Step(period / 2);
+        Assert.AreEqual(start[32 * 64], surface.HeightAt(0, 32), 0.0007f, "a period later the wave should be back");
 
         double MotionAfterASecond(double damping)
         {
-            Surface surface = new(64, 1.0, 1.2, Liquids.Water, wavelengthMetres: 0.16, dampingPerSecond: damping);
-            surface.Disturb(0.5, 0.5, 0.04, -0.01);
-            surface.Step(1.0);
-            return surface.Motion();
+            Surface pool = new(64, 1.0, 1.2, Liquids.Water, dampingPerSecond: damping);
+            pool.Disturb(0.5, 0.5, 0.04, -0.01);
+            pool.Step(0.5);
+            pool.Step(0.5);
+            return pool.Motion();
         }
 
         double free = MotionAfterASecond(0), damped = MotionAfterASecond(2.0);
-        // Velocity decays as exp(−γt): two per second over a second leaves under a seventh of the motion.
-        Assert.IsTrue(damped < free * 0.15, $"free {free:E2}, damped {damped:E2}");
+        // ḧ = −ω²h − γḣ decays as exp(−γt/2): two per second over a second leaves e⁻¹ of the motion.
+        Assert.AreEqual(Math.Exp(-1), damped / free, 0.06, $"free {free:E2}, damped {damped:E2}");
     }
 
     [TestMethod]

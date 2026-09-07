@@ -1,21 +1,16 @@
 #version 300 es
-// Undine: one substep of the surface. The texture holds height (r, metres) and vertical velocity (g, m/s) per cell.
-// v += c²∇²h·dt + ν∇²v·dt − γ·v·dt; h += v·dt. The field runs at one speed c: the liquid's phase speed for the
-// wavelength the touches make, c² = (g/k + σk/ρ)·tanh(kh), which the host evaluates from the liquid's numbers.
-// ν is the kinematic viscosity; γ is the extra decay the host asks for beyond it (a pool's rim and surface film).
-// Wind is a random pressure over the surface, smooth over a few cells and new every substep.
-// Stable while dt < cell/(c·√2) and dt ≤ 0.1·cell²/ν; at the wave bound itself the checkerboard mode grows without limit,
-// so the host keeps a margin below it when it picks substeps.
+// Undine: the surface back in real space, plus what touches it. The spectral step (undine-water-fft, undine-water-evolve)
+// advanced the mirrored field exactly; this pass takes the pool's own quadrant out of it, height in the real part and
+// vertical velocity in the imaginary, and applies the forces that are not linear waves: a finger holding the surface
+// down, wind as a random pressure. The texture written holds height (r, metres) and velocity (g, m/s) per cell.
 precision highp float;
+precision highp int;
 
-uniform sampler2D uState;      // previous h, v
+uniform sampler2D uSpectral;   // the evolved field, twice the pool's size
 uniform float uCell;           // cell size, metres
-uniform float uDt;             // substep, seconds
-uniform float uWaveSpeed;      // phase speed of the touch wavelength, m/s
-uniform float uViscosity;      // kinematic viscosity, m²/s
-uniform float uDamping;        // extra decay, 1/s
+uniform float uDt;             // seconds since the last step
 uniform float uWind;           // wind on the surface: random pressure, m/s² of vertical acceleration
-uniform vec2 uSeed;            // changes every substep so the gusts do
+uniform vec2 uSeed;            // changes every step so the gusts do
 uniform vec2 uTouch;           // where a finger is, in cell units; negative when none
 uniform float uTouchRadius;    // cells
 uniform float uTouchDepth;     // how far a finger holds the surface down at its centre, metres
@@ -34,19 +29,10 @@ float gust(vec2 p) {
 }
 
 void main() {
-    ivec2 size = textureSize(uState, 0);
     ivec2 p = ivec2(gl_FragCoord.xy);
-    vec2 c = texelFetch(uState, p, 0).rg;
-    vec2 l = texelFetch(uState, ivec2(max(p.x - 1, 0), p.y), 0).rg;
-    vec2 r = texelFetch(uState, ivec2(min(p.x + 1, size.x - 1), p.y), 0).rg;
-    vec2 d = texelFetch(uState, ivec2(p.x, max(p.y - 1, 0)), 0).rg;
-    vec2 u = texelFetch(uState, ivec2(p.x, min(p.y + 1, size.y - 1)), 0).rg;
-    vec2 lap = l + r + d + u - 4.0 * c;
-    float cell2 = uCell * uCell;
-    float v = c.g + (uWaveSpeed * uWaveSpeed * lap.r + uViscosity * lap.g) / cell2 * uDt;
-    if (uWind > 0.0) v += uWind * gust((vec2(p) + 0.5) * uCell / 0.07 + uSeed) * uDt;
-    v *= exp(-uDamping * uDt);
-    float h = c.r + v * uDt;
+    vec2 state = texelFetch(uSpectral, p, 0).rg;
+    float h = state.x, v = state.y;
+    if (uWind > 0.0) v += uWind * gust((vec2(p) + 0.5) * uCell / 0.12 + uSeed) * uDt;
     if (uTouch.x >= 0.0) {
         // A finger holds the surface down to its own depth, not further: the dent is pulled toward −depth·g with
         // weight g, so it is exact at the centre, nothing at the edge, and never deepens while the finger stays.

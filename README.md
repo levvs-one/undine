@@ -20,7 +20,7 @@ and walls are refracted rays.
 | Path | What |
 | --- | --- |
 | `src/Undine` | The .NET package: `Liquid` and `Liquids`, `Surface` (height field with viscous damping), `LiquidOptics` (indices, Fresnel, absorption from Caustikon), `CausticMap`. |
-| `shaders/` | GLSL ES 3.00 for the surface step, the caustic points and the pool render (what the site runs); an HLSL file for Unity and Unreal; a Godot 4 shader. |
+| `shaders/` | GLSL ES 3.00 for the spectral surface step (FFT pass, mode evolution, forces), the caustics and the pool render (what the site runs); an HLSL file for Unity and Unreal; a Godot 4 shader. |
 | `site/Undine.Site/` | The site: Blazor WebAssembly in the Caustikon format. The WebGL2 pool, the liquid table, one "Give Me!" page per craft with the numbers and the shaders. `wwwroot/data/liquids.json` is baked by `tools/Undine.Bake`. |
 | `tests/` | What the physics must keep doing: water's index and its blue over metres, wave speed, a drop spreading, glycerol dying, a flat surface lighting the floor evenly and a ripple focusing it. |
 | `external/caustikon` | Caustikon as a submodule, the source of every optical number. |

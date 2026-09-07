@@ -1,6 +1,7 @@
 // Undine's water on the GPU, driven from .NET: the page sends a spec (the liquid's numbers, depth, side, lamp),
-// the simulation and the picture run here every frame. The three shaders are loaded from /shaders so the files the
-// site hands out are the files it runs.
+// the simulation and the picture run here every frame. The shaders are loaded from /shaders so the files the site
+// hands out are the files it runs. The surface step is spectral: the field is mirrored to twice its size, FFT'd,
+// every mode advanced exactly by the liquid's dispersion relation, and transformed back.
 window.undineWater = (() => {
     const VERTEX = `#version 300 es
 void main() {
@@ -23,6 +24,18 @@ void main() {
     float energy = vWeight * area / uTexelArea;
     outColour = vec4(uChannel == 0 ? energy : 0.0, uChannel == 1 ? energy : 0.0, uChannel == 2 ? energy : 0.0, 1.0);
 }`;
+    // The pool's field mirrored into four: even across each wall, so the walls reflect and the transform is periodic.
+    const EXTEND_FS = `#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D uState;
+out vec2 outValue;
+void main() {
+    ivec2 size = textureSize(uState, 0);
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    ivec2 q = ivec2(p.x < size.x ? p.x : 2 * size.x - 1 - p.x, p.y < size.y ? p.y : 2 * size.y - 1 - p.y);
+    outValue = texelFetch(uState, q, 0).rg;
+}`;
     const TAN_HALF = Math.tan(40 * Math.PI / 360);
     const CAUSTIC_SIZE = 512;
     // The caustic map covers the floor and a margin around it, so light bound for the walls is kept.
@@ -34,12 +47,14 @@ void main() {
 
     async function loadSources() {
         if (sources) return sources;
-        const [sim, caustic, render] = await Promise.all([
+        const [sim, fft, evolve, caustic, render] = await Promise.all([
             fetch("shaders/undine-water-sim.frag.glsl").then(r => r.text()),
+            fetch("shaders/undine-water-fft.frag.glsl").then(r => r.text()),
+            fetch("shaders/undine-water-evolve.frag.glsl").then(r => r.text()),
             fetch("shaders/undine-water-caustics.vert.glsl").then(r => r.text()),
             fetch("shaders/undine-water.frag.glsl").then(r => r.text()),
         ]);
-        sources = { sim, caustic, render };
+        sources = { sim, fft, evolve, caustic, render };
         return sources;
     }
 
@@ -68,10 +83,11 @@ void main() {
 
     // Float textures are read with NEAREST: linear filtering of floats is an extension some GPUs lack, and a texture
     // filtered that way without it is incomplete and reads as zero. The shaders interpolate by hand.
-    function makeTarget(gl, size) {
+    function makeTarget(gl, size, complex) {
         const texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, size, size, 0, gl.RGBA, gl.FLOAT, null);
+        if (complex) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, size, size, 0, gl.RG, gl.FLOAT, null);
+        else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, size, size, 0, gl.RGBA, gl.FLOAT, null);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -92,13 +108,16 @@ void main() {
         const view = {
             canvas, gl,
             sim: link(gl, VERTEX, src.sim),
+            extend: link(gl, VERTEX, EXTEND_FS),
+            fft: link(gl, VERTEX, src.fft),
+            evolve: link(gl, VERTEX, src.evolve),
             caustic: link(gl, src.caustic, AREA_FS),
             render: link(gl, VERTEX, src.render),
-            spec: null, cells: 0, a: null, b: null, causticMap: null,
+            spec: null, cells: 0, a: null, b: null, sa: null, sb: null, causticMap: null,
             yaw: 0.35, pitch: 0.30, distance: 4.8,
             orbit: false, touch: null, drops: [], lastTime: 0,
             dragging: false, lastX: 0, lastY: 0, pointers: new Map(), pinch: 0,
-            frame: 0, fallback: 0, frames: 0, fpsTime: 0, fps: 0,
+            frame: 0, fallback: 0, frames: 0, fpsTime: 0, fps: 0, gust: 1, gustClock: 0,
         };
         attach(view);
         return view;
@@ -110,53 +129,89 @@ void main() {
         view.cells = spec.cells;
         view.a = makeTarget(gl, spec.cells);
         view.b = makeTarget(gl, spec.cells);
+        view.sa = makeTarget(gl, 2 * spec.cells, true);
+        view.sb = makeTarget(gl, 2 * spec.cells, true);
         view.causticMap = view.causticMap || makeTarget(gl, CAUSTIC_SIZE);
     }
 
-    const waveSpeed = spec => spec.waveSpeed;
     const cellSize = spec => spec.side / spec.cells;
-    // A margin under the wave bound: at the bound itself the checkerboard mode is marginal and the wind feeds it.
-    const stableStep = spec => 0.8 * Math.min(cellSize(spec) / (waveSpeed(spec) * Math.SQRT2), 0.1 * cellSize(spec) ** 2 / Math.max(1e-12, spec.kinematicViscosity));
     function lightDirection(spec) {
         const az = spec.lampAzimuth * Math.PI / 180, el = spec.lampElevation * Math.PI / 180;
         return [-Math.sin(az) * Math.cos(el), -Math.sin(el), -Math.cos(az) * Math.cos(el)];
     }
 
+    // One full-screen pass from one texture into another target.
+    function pass(gl, program, input, target, size, setUniforms) {
+        gl.useProgram(program.program);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+        gl.viewport(0, 0, size, size);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, input.texture);
+        setUniforms(program.u);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
+    // One step of the surface, exact for the linear waves whatever dt is: mirror, transform, advance each mode by
+    // the liquid's dispersion relation, transform back, then the forces that are not waves.
     function stepSurface(view, seconds) {
-        const { gl, spec, sim } = view;
-        const substeps = Math.min(40, Math.max(1, Math.ceil(seconds / stableStep(spec))));
-        const dt = seconds / substeps;
-        gl.useProgram(sim.program);
-        gl.viewport(0, 0, spec.cells, spec.cells);
+        const { gl, spec } = view;
+        const n = spec.cells, m = 2 * n;
         gl.disable(gl.BLEND);
+        pass(gl, view.extend, view.a, view.sa, m, u => gl.uniform1i(u.uState, 0));
+        const transform = inverse => {
+            for (let axis = 0; axis < 2; axis++) {
+                for (let span = 1; span < m; span *= 2) {
+                    pass(gl, view.fft, view.sa, view.sb, m, u => {
+                        gl.uniform1i(u.uInput, 0);
+                        gl.uniform1i(u.uSpan, span);
+                        gl.uniform1i(u.uAxis, axis);
+                        gl.uniform1i(u.uInverse, inverse ? 1 : 0);
+                    });
+                    [view.sa, view.sb] = [view.sb, view.sa];
+                }
+            }
+        };
+        transform(false);
+        pass(gl, view.evolve, view.sa, view.sb, m, u => {
+            gl.uniform1i(u.uSpectrum, 0);
+            gl.uniform1f(u.uCell, cellSize(spec));
+            gl.uniform1f(u.uDepth, spec.depth);
+            gl.uniform1f(u.uTension, spec.tensionOverDensity);
+            gl.uniform1f(u.uViscosity, spec.kinematicViscosity);
+            gl.uniform1f(u.uDamping, spec.damping);
+            gl.uniform1f(u.uDt, seconds);
+        });
+        [view.sa, view.sb] = [view.sb, view.sa];
+        transform(true);
         const now = performance.now();
         view.drops = view.drops.filter(d => d.until > now);
         const push = view.touch || view.drops[0];
-        for (let i = 0; i < substeps; i++) {
-            gl.bindFramebuffer(gl.FRAMEBUFFER, view.b.fbo);
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, view.a.texture);
-            gl.uniform1i(sim.u.uState, 0);
-            gl.uniform1f(sim.u.uCell, cellSize(spec));
-            gl.uniform1f(sim.u.uDt, dt);
-            gl.uniform1f(sim.u.uWaveSpeed, waveSpeed(spec));
-            gl.uniform1f(sim.u.uViscosity, spec.kinematicViscosity);
-            gl.uniform1f(sim.u.uDamping, spec.damping);
-            gl.uniform1f(sim.u.uWind, spec.wind);
-            gl.uniform2f(sim.u.uSeed, Math.random() * 100, Math.random() * 100);
+        pass(gl, view.sim, view.sa, view.b, n, u => {
+            gl.uniform1i(u.uSpectral, 0);
+            gl.uniform1f(u.uCell, cellSize(spec));
+            gl.uniform1f(u.uDt, seconds);
+            gl.uniform1f(u.uWind, spec.wind * view.gust);
+            gl.uniform2f(u.uSeed, Math.random() * 100, Math.random() * 100);
             if (push) {
-                gl.uniform2f(sim.u.uTouch, push.u, push.v);
-                gl.uniform1f(sim.u.uTouchRadius, Math.max(1.5, spec.touchRadius / cellSize(spec)));
-                gl.uniform1f(sim.u.uTouchDepth, spec.touch * (push.strength || 1));
+                gl.uniform2f(u.uTouch, push.u, push.v);
+                gl.uniform1f(u.uTouchRadius, Math.max(1.5, spec.touchRadius / cellSize(spec)));
+                gl.uniform1f(u.uTouchDepth, spec.touch * (push.strength || 1));
             } else {
-                gl.uniform2f(sim.u.uTouch, -1, -1);
-                gl.uniform1f(sim.u.uTouchRadius, 1);
-                gl.uniform1f(sim.u.uTouchDepth, 0);
+                gl.uniform2f(u.uTouch, -1, -1);
+                gl.uniform1f(u.uTouchRadius, 1);
+                gl.uniform1f(u.uTouchDepth, 0);
             }
-            gl.drawArrays(gl.TRIANGLES, 0, 3);
-            [view.a, view.b] = [view.b, view.a];
-        }
+        });
+        [view.a, view.b] = [view.b, view.a];
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    // Wind comes in gusts: a slow random envelope, so the pool has calm spells and rippled ones.
+    function gustEnvelope(view, seconds) {
+        view.gustClock = (view.gustClock || 0) + seconds;
+        const t = view.gustClock;
+        const e = 0.5 + 0.5 * Math.sin(t * 0.37 + 1.3) * Math.sin(t * 0.11) + 0.25 * Math.sin(t * 0.83 + 0.4);
+        view.gust = Math.max(0, Math.min(1, e));
     }
 
     function buildCaustics(view) {
@@ -282,6 +337,7 @@ void main() {
         const seconds = view.lastTime ? Math.min(0.05, (time - view.lastTime) / 1000) : 1 / 60;
         view.lastTime = time;
         surfaces(view);
+        gustEnvelope(view, seconds);
         stepSurface(view, seconds);
         const norm = buildCaustics(view);
         draw(view, norm);
@@ -410,7 +466,7 @@ void main() {
             if (!view || !view.spec) return null;
             view.forceSize = [width || 1280, height || 800];
             surfaces(view);
-            for (let i = 0; i < Math.round((seconds || 0) * 60); i++) stepSurface(view, 1 / 60);
+            for (let i = 0; i < Math.round((seconds || 0) * 60); i++) { gustEnvelope(view, 1 / 60); stepSurface(view, 1 / 60); }
             frame(view, view.lastTime + 1000 / 60);
             const url = view.canvas.toDataURL("image/png");
             view.forceSize = null;

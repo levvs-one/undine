@@ -86,7 +86,7 @@ vec3 lining(vec2 xz, float w) {
     float wq = w / TILE;
     vec2 f = abs(fract(q) - 0.5);
     float grout = smoothstep(0.455 - wq, 0.455 + wq, max(f.x, f.y));
-    vec3 colour = mix(vec3(0.66, 0.82, 0.87), vec3(0.24, 0.47, 0.62), checker(q, wq));
+    vec3 colour = mix(vec3(0.72, 0.88, 0.90), vec3(0.28, 0.60, 0.74), checker(q, wq));
     return mix(colour, vec3(0.72, 0.73, 0.71), grout);
 }
 
@@ -94,7 +94,7 @@ vec3 lining(vec2 xz, float w) {
 // Ripples show as the reflection slides between the haze and the blue, and as glints when a slope catches the sun.
 vec3 sky(vec3 d) {
     float t = clamp(d.y, 0.0, 1.0);
-    vec3 s = mix(vec3(0.80, 0.84, 0.90), vec3(0.20, 0.38, 0.72), pow(t, 0.5));
+    vec3 s = mix(vec3(0.66, 0.78, 0.92), vec3(0.16, 0.36, 0.78), pow(t, 0.5));
     vec3 toLamp = -uLight;
     float key = max(0.0, dot(d, toLamp));
     s += vec3(1.0, 0.96, 0.88) * uLampStrength * (60.0 * smoothstep(0.99985, 0.99997, key) + 1.5 * pow(key, 40.0) + 0.3 * pow(key, 6.0));
@@ -139,8 +139,14 @@ vec3 wallLight(vec3 p, vec3 wallNormal, vec3 lampInside) {
     float ao = 1.0 - 0.4 * (exp(-fromFloor / 0.35) + exp(-along / 0.35));
     float cosWall = max(0.0, dot(-lampInside, wallNormal));
     float cosFloor = max(1e-3, -lampInside.y);
+    // Back up the beam to where it crossed the rest plane: over the deck means the deck's shadow.
+    vec2 entry = p.xz - lampInside.xz * (p.y / lampInside.y);
+    bool shadowed = abs(entry.x) > halfSide || abs(entry.y) > halfSide;
     float t = fromFloor / cosFloor;
-    vec3 lamp = cosWall > 0.0 ? lampMap(p.xz + lampInside.xz * t) * (cosWall / cosFloor) : vec3(0.0);
+    vec2 landing = p.xz + lampInside.xz * t;
+    bool mapped = abs(landing.x) < halfSide * uMargin && abs(landing.y) < halfSide * uMargin;
+    vec3 focus = mapped ? lampMap(landing) : vec3(1.0);
+    vec3 lamp = cosWall > 0.0 && !shadowed ? focus * (cosWall / cosFloor) : vec3(0.0);
     return vec3(AMBIENT * ao) + uLampStrength * max(0.0, -uLight.y) * lamp;
 }
 

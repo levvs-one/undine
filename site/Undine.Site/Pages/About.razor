@@ -33,7 +33,7 @@ Vector3 tenMetres = optics.Transmittance(10);       // what white becomes after 
 
 Surface pool = new(cells: 256, sizeMetres: 4, depthMetres: 1.2, water);
 pool.Disturb(xMetres: 2, yMetres: 2, radiusMetres: 0.05, amountMetres: -0.01);   // a drop
-pool.Step(1 / 60d);                                 // substeps as stability requires
+pool.Step(1 / 60d);                                 // exact for any dt: spectral, no stability limit
 Vector3 normal = pool.NormalAt(128, 128);
 
 CausticMap floor = new(256);

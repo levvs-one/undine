@@ -29,7 +29,7 @@
         <div><div class="value">@SiteInfo.Number(optics.CriticalAngleDegrees, 1)°</div><div class="label">@L["home.r.critical"]</div></div>
         <div><div class="value">@SiteInfo.Number(liquid.ViscosityMPaS, liquid.ViscosityMPaS < 10 ? 2 : 0) mPa·s</div><div class="label">@L["home.r.visc"]</div></div>
         <div><div class="value"><span class="swatch" style="background:@RoundTrip"></span> @RoundTrip</div><div class="label">@L["home.r.colour"]</div></div>
-        <div><div class="value">@SiteInfo.Number(StableStep * 1000, 2) ms</div><div class="label">@L["home.r.step"]</div></div>
+        <div><div class="value">@SiteInfo.Number(Wavelength / WaveSpeed, 2) s</div><div class="label">@L["home.r.step"]</div></div>
         <div><div class="value">@fps</div><div class="label">@L["home.r.fps"]</div></div>
     </div>
     <div class="bench-controls">
@@ -92,7 +92,7 @@
 @code {
     private Liquid liquid = Liquids.Water;
     private LiquidOptics optics = new(Liquids.Water);
-    private double depthValue = 1.2, sideValue = 4, lampAzimuthValue = 35, lampElevationValue = 55, lampValue = 1, exposureValue = 1, touchValue = 0.02, touchRadiusValue = 0.07, dampingValue = 0.25, windValue = 0.18;
+    private double depthValue = 1.2, sideValue = 4, lampAzimuthValue = 35, lampElevationValue = 55, lampValue = 1, exposureValue = 1, touchValue = 0.02, touchRadiusValue = 0.07, dampingValue = 0.35, windValue = 0.25;
     private int floorValue, cellsValue = 256;
     private bool orbitValue, gpu = true, rendered, pushQueued;
     private int fps;
@@ -113,12 +113,11 @@
     private int cells { get => cellsValue; set { cellsValue = value; Push(); } }
     private bool orbit { get => orbitValue; set { orbitValue = value; _ = Js.InvokeVoidAsync("undineWater.orbit", "water", value); } }
 
-    // The field runs at the phase speed of the wavelength a touch makes: a dent of one radius is half a wavelength.
+    // The wavelength a touch makes: a dent of one radius is half a wavelength. The field runs every wavelength at
+    // its own speed; this one is what the readout quotes.
     private double Wavelength => 4 * touchRadiusValue;
 
     private double WaveSpeed => liquid.PhaseSpeed(Wavelength, depthValue);
-
-    private double StableStep => Math.Min(sideValue / cellsValue / (WaveSpeed * Math.Sqrt(2)), 0.1 * Math.Pow(sideValue / cellsValue, 2) / Math.Max(1e-12, liquid.KinematicViscosity));
 
     // White light down to the floor and back, from the three absorption coefficients.
     private string RoundTrip
@@ -179,7 +178,7 @@
             exposure = exposureValue,
             touch = touchValue,
             touchRadius = touchRadiusValue,
-            waveSpeed = WaveSpeed,
+            tensionOverDensity = liquid.SurfaceTensionMNPerM * 1e-3 / liquid.DensityKgPerM3,
             damping = dampingValue,
             wind = windValue,
         };
