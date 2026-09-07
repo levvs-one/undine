@@ -4,7 +4,8 @@
 // wavelength the touches make, c² = (g/k + σk/ρ)·tanh(kh), which the host evaluates from the liquid's numbers.
 // ν is the kinematic viscosity; γ is the extra decay the host asks for beyond it (a pool's rim and surface film).
 // Wind is a random pressure over the surface, smooth over a few cells and new every substep.
-// Stable while dt ≤ cell/(c·√2) and dt ≤ 0.1·cell²/ν; the host picks substeps to keep both.
+// Stable while dt < cell/(c·√2) and dt ≤ 0.1·cell²/ν; at the wave bound itself the checkerboard mode grows without limit,
+// so the host keeps a margin below it when it picks substeps.
 precision highp float;
 
 uniform sampler2D uState;      // previous h, v
@@ -17,7 +18,7 @@ uniform float uWind;           // wind on the surface: random pressure, m/s² of
 uniform vec2 uSeed;            // changes every substep so the gusts do
 uniform vec2 uTouch;           // where a finger is, in cell units; negative when none
 uniform float uTouchRadius;    // cells
-uniform float uTouchAmount;    // metres per substep
+uniform float uTouchDepth;     // how far a finger holds the surface down at its centre, metres
 out vec4 outState;
 
 float hash(vec2 p) {
@@ -47,8 +48,13 @@ void main() {
     v *= exp(-uDamping * uDt);
     float h = c.r + v * uDt;
     if (uTouch.x >= 0.0) {
+        // A finger holds the surface down to its own depth, not further: the dent is pulled toward −depth·g with
+        // weight g, so it is exact at the centre, nothing at the edge, and never deepens while the finger stays.
         vec2 offset = (vec2(p) + 0.5) - uTouch;
-        h += uTouchAmount * exp(-dot(offset, offset) / (2.0 * uTouchRadius * uTouchRadius));
+        float g = exp(-dot(offset, offset) / (2.0 * uTouchRadius * uTouchRadius));
+        h -= max(0.0, h + uTouchDepth * g) * g;
     }
+    // Whatever goes wrong upstream (a lost context, a step too long), the water comes back rather than staying grey.
+    if (!(abs(h) < 10.0 && abs(v) < 100.0)) { h = 0.0; v = 0.0; }
     outState = vec4(h, v, 0.0, 1.0);
 }

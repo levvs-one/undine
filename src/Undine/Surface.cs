@@ -78,8 +78,11 @@ public sealed class Surface
     /// <summary>The speed the field runs at, m/s: the phase speed of <see cref="WavelengthMetres"/>, or √(g·depth) for long waves.</summary>
     public double WaveSpeed => WavelengthMetres is { } wavelength ? Liquid.PhaseSpeed(wavelength, DepthMetres) : Liquid.ShallowWaveSpeed(DepthMetres);
 
-    /// <summary>Largest stable step for one substep, s: the wave's CFL bound and the explicit diffusion bound, whichever is smaller.</summary>
-    public double StableStep => Math.Min(CellMetres / (WaveSpeed * Math.Sqrt(2d)), 0.1 * CellMetres * CellMetres / Math.Max(1e-12, Liquid.KinematicViscosity));
+    /// <summary>
+    /// The substep the integrator uses, s: four fifths of the smaller of the wave's CFL bound cell/(c√2) and the explicit
+    /// diffusion bound 0.1·cell²/ν. At the wave bound itself the checkerboard mode is marginal and grows under any forcing.
+    /// </summary>
+    public double StableStep => 0.8 * Math.Min(CellMetres / (WaveSpeed * Math.Sqrt(2d)), 0.1 * CellMetres * CellMetres / Math.Max(1e-12, Liquid.KinematicViscosity));
 
     /// <summary>Height above rest at a cell, metres.</summary>
     public float HeightAt(int x, int y) => height[Index(x, y)];

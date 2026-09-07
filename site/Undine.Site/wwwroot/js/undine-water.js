@@ -112,7 +112,8 @@ void main() {
 
     const waveSpeed = spec => spec.waveSpeed;
     const cellSize = spec => spec.side / spec.cells;
-    const stableStep = spec => Math.min(cellSize(spec) / (waveSpeed(spec) * Math.SQRT2), 0.1 * cellSize(spec) ** 2 / Math.max(1e-12, spec.kinematicViscosity));
+    // A margin under the wave bound: at the bound itself the checkerboard mode is marginal and the wind feeds it.
+    const stableStep = spec => 0.8 * Math.min(cellSize(spec) / (waveSpeed(spec) * Math.SQRT2), 0.1 * cellSize(spec) ** 2 / Math.max(1e-12, spec.kinematicViscosity));
     function lightDirection(spec) {
         const az = spec.lampAzimuth * Math.PI / 180, el = spec.lampElevation * Math.PI / 180;
         return [-Math.sin(az) * Math.cos(el), -Math.sin(el), -Math.cos(az) * Math.cos(el)];
@@ -143,12 +144,11 @@ void main() {
             if (push) {
                 gl.uniform2f(sim.u.uTouch, push.u, push.v);
                 gl.uniform1f(sim.u.uTouchRadius, Math.max(1.5, spec.touchRadius / cellSize(spec)));
-                // A finger pushes the surface down by the touch strength per tenth of a second.
-                gl.uniform1f(sim.u.uTouchAmount, -spec.touch * (push.strength || 1) * dt / 0.1);
+                gl.uniform1f(sim.u.uTouchDepth, spec.touch * (push.strength || 1));
             } else {
                 gl.uniform2f(sim.u.uTouch, -1, -1);
                 gl.uniform1f(sim.u.uTouchRadius, 1);
-                gl.uniform1f(sim.u.uTouchAmount, 0);
+                gl.uniform1f(sim.u.uTouchDepth, 0);
             }
             gl.drawArrays(gl.TRIANGLES, 0, 3);
             [view.a, view.b] = [view.b, view.a];
