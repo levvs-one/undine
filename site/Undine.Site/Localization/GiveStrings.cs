@@ -38,7 +38,7 @@ public static class GiveStrings
         ["give.x.critical"] = ("above this angle from the normal, light inside the liquid cannot leave: the floor seen from below turns into a mirror beyond a circle.", "выше этого угла от нормали свет изнутри жидкости выйти не может: дно, увиденное снизу, за пределами круга становится зеркалом."),
 
         ["give.file.sim"] = ("The height-field step: one pass over two float textures, viscosity as a Laplacian, touches as Gaussian dents.", "Шаг поля высот: один проход по двум float-текстурам, вязкость как лапласиан, касания как гауссовы вмятины."),
-        ["give.file.caustic"] = ("Caustics: one point per cell and channel, refracted through the surface normal and splatted onto the floor.", "Каустики: по точке на ячейку и канал, преломлённой через нормаль поверхности и брошенной на дно."),
+        ["give.file.caustic"] = ("Caustics: the surface grid drawn as triangles, each vertex refracted to the floor; brightness is the area ratio from derivatives, so there are no gaps.", "Каустики: сетка поверхности треугольниками, каждая вершина преломлена на дно; яркость — отношение площадей из производных, поэтому дыр нет."),
         ["give.file.render"] = ("The view: per-channel refraction to the floor, Fresnel reflection of the sky, absorption along the path.", "Вид: преломление к дну по каналам, френелевское отражение неба, поглощение вдоль пути."),
         ["give.file.hlsl"] = ("The same refraction and absorption as one HLSL function for Unity and Unreal.", "То же преломление и поглощение одной функцией HLSL для Unity и Unreal."),
         ["give.file.godot"] = ("Godot 4 spatial shader with the same uniforms.", "Пространственный шейдер Godot 4 с теми же uniform."),
