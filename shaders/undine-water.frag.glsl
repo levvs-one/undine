@@ -110,8 +110,16 @@ vec3 compand(vec3 c) {
     return mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
 }
 
+// The caustic map, bilinear from the nearest four texels (the float texture itself is unfiltered).
 vec3 lampMap(vec2 xz) {
-    return texture(uCaustic, xz / (uSide * uMargin) + 0.5).rgb * uCausticNorm;
+    ivec2 size = textureSize(uCaustic, 0);
+    vec2 p = clamp((xz / (uSide * uMargin) + 0.5) * vec2(size) - 0.5, vec2(0.0), vec2(size) - 1.0);
+    ivec2 i = ivec2(floor(p));
+    vec2 f = p - vec2(i);
+    ivec2 j = min(i + 1, size - 1);
+    vec3 a = texelFetch(uCaustic, i, 0).rgb, b = texelFetch(uCaustic, ivec2(j.x, i.y), 0).rgb;
+    vec3 c = texelFetch(uCaustic, ivec2(i.x, j.y), 0).rgb, d = texelFetch(uCaustic, j, 0).rgb;
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y) * uCausticNorm;
 }
 
 // Light on the floor at xz: skylight, shaded in the corners, plus the lamp through the caustic map.

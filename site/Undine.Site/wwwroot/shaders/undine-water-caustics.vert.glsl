@@ -1,9 +1,10 @@
 #version 300 es
-// Undine: lamp light under the surface. One point per grid cell and per colour channel: the light refracts through
-// the surface with that channel's index and lands on the floor plane; the points are summed into a map that the
-// render shader reads for the floor and, by continuing the refracted ray, for the walls. The map covers the floor
-// and a margin around it (uMargin times the pool side) so light bound for the walls is kept. A flat surface puts the
-// points evenly, so the map reads one there; ripples focus the points into bright lines and leave gaps.
+// Undine: lamp light under the surface. The surface grid is drawn as triangles, every vertex refracted through the
+// surface with one colour channel's index and moved to where it lands on the floor plane; the fragment shader turns
+// the change of area between the surface and the floor into brightness. Where ripples focus the light the triangles
+// shrink and fold over each other and the sum is a bright line; where they spread the light the triangles grow and
+// go dim. There are no gaps by construction. The map covers the floor and a margin around it (uMargin times the
+// pool side) so light bound for the walls is kept. A flat surface gives exactly one everywhere.
 precision highp float;
 precision highp int;
 
@@ -12,10 +13,11 @@ uniform float uCell;           // metres per cell
 uniform float uDepth;          // floor below the rest level, metres
 uniform vec3 uLight;           // unit direction the light travels, pointing down
 uniform vec3 uIor;             // index at 610, 550, 465 nm
-uniform int uGrid;             // points per side
+uniform int uGrid;             // vertices per side
+uniform int uChannel;          // 0 red, 1 green, 2 blue
 uniform float uMargin;         // map extent as a multiple of the pool side
-uniform float uPointSize;      // texels per point; the fragment shader shapes the splat
-out vec3 vEnergy;
+out vec2 vSurface;             // where the light entered, metres on the rest plane
+out float vWeight;             // the share of the light that went in
 
 float fresnel(float cosI, float n1, float n2) {
     float eta = n1 / n2;
@@ -40,10 +42,13 @@ float heightUv(vec2 uv) {
 }
 
 void main() {
-    int channel = gl_VertexID % 3;
-    int cell = gl_VertexID / 3;
-    int ix = cell % uGrid, iy = cell / uGrid;
-    vec2 uv = (vec2(float(ix), float(iy)) + 0.5) / float(uGrid);
+    // Six vertices per grid square, two triangles.
+    int quad = gl_VertexID / 6;
+    int corner = gl_VertexID % 6;
+    int qx = quad % (uGrid - 1), qy = quad / (uGrid - 1);
+    ivec2 offset = corner == 0 || corner == 3 ? ivec2(0, 0) : (corner == 1 ? ivec2(1, 0) : (corner == 2 || corner == 4 ? ivec2(1, 1) : ivec2(0, 1)));
+    vec2 uv = vec2(ivec2(qx, qy) + offset) / float(uGrid - 1);
+
     ivec2 size = textureSize(uState, 0);
     vec2 texel = 1.0 / vec2(size);
     float side = uCell * float(size.x);
@@ -51,16 +56,19 @@ void main() {
     float hl = heightUv(uv - vec2(texel.x, 0.0)), hr = heightUv(uv + vec2(texel.x, 0.0));
     float hd = heightUv(uv - vec2(0.0, texel.y)), hu = heightUv(uv + vec2(0.0, texel.y));
     vec3 normal = normalize(vec3(-(hr - hl) / (2.0 * uCell), 1.0, -(hu - hd) / (2.0 * uCell)));
-    float n = channel == 0 ? uIor.x : (channel == 1 ? uIor.y : uIor.z);
+    float n = uChannel == 0 ? uIor.x : (uChannel == 1 ? uIor.y : uIor.z);
     float cosI = clamp(-dot(uLight, normal), 0.0, 1.0);
     vec3 inside = refract(uLight, normal, 1.0 / n);
-    if (dot(inside, inside) < 0.5 || inside.y >= 0.0) { gl_Position = vec4(4.0, 4.0, 4.0, 1.0); gl_PointSize = 1.0; vEnergy = vec3(0.0); return; }
     float weight = 1.0 - fresnel(cosI, 1.0, n);
+    if (dot(inside, inside) < 0.5 || inside.y >= -0.05) {
+        // Reflected away, or nearly grazing: the vertex stays under its entry point and carries no light.
+        inside = vec3(0.0, -1.0, 0.0);
+        weight = 0.0;
+    }
     // From the surface point down to the floor plane: the sideways travel is the refracted direction times the drop.
     float drop = uDepth + h;
-    vec2 landing = (uv - 0.5) * side + inside.xz / (-inside.y) * drop;
-    vec2 clip = landing / (side * uMargin) * 2.0;
-    gl_Position = vec4(clip, 0.0, 1.0);
-    gl_PointSize = uPointSize;
-    vEnergy = weight * (channel == 0 ? vec3(1.0, 0.0, 0.0) : (channel == 1 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0)));
+    vSurface = (uv - 0.5) * side;
+    vec2 landing = vSurface + inside.xz / (-inside.y) * drop;
+    gl_Position = vec4(landing / (side * uMargin) * 2.0, 0.0, 1.0);
+    vWeight = weight;
 }

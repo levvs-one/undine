@@ -7,18 +7,21 @@ void main() {
     vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
     gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }`;
-    // Each landing point is a Gaussian splat a texel or so wide, so the map is smooth whatever fraction of a
-    // texel the point falls on; the splat integrates to one over the map.
-    const POINT_FS = `#version 300 es
+    // Brightness on the floor is how much surface each texel's light came from: the area of the surface per texel
+    // of the map, from the derivatives of the entry point, over the same for a flat surface. Folds add up.
+    const AREA_FS = `#version 300 es
 precision highp float;
-uniform float uPointSize;
-uniform float uSigma;
-in vec3 vEnergy;
+precision highp int;
+uniform float uTexelArea;      // metres² of the rest plane under one texel of the map
+uniform int uChannel;
+in vec2 vSurface;
+in float vWeight;
 out vec4 outColour;
 void main() {
-    vec2 r = (gl_PointCoord - 0.5) * uPointSize;
-    float g = exp(-dot(r, r) / (2.0 * uSigma * uSigma)) / (6.2831853 * uSigma * uSigma);
-    outColour = vec4(vEnergy * g, 1.0);
+    vec2 dx = dFdx(vSurface), dy = dFdy(vSurface);
+    float area = abs(dx.x * dy.y - dx.y * dy.x);
+    float energy = vWeight * area / uTexelArea;
+    outColour = vec4(uChannel == 0 ? energy : 0.0, uChannel == 1 ? energy : 0.0, uChannel == 2 ? energy : 0.0, 1.0);
 }`;
     const TAN_HALF = Math.tan(40 * Math.PI / 360);
     const CAUSTIC_SIZE = 512;
@@ -89,7 +92,7 @@ void main() {
         const view = {
             canvas, gl,
             sim: link(gl, VERTEX, src.sim),
-            caustic: link(gl, src.caustic, POINT_FS),
+            caustic: link(gl, src.caustic, AREA_FS),
             render: link(gl, VERTEX, src.render),
             spec: null, cells: 0, a: null, b: null, causticMap: null,
             yaw: 0.35, pitch: 0.30, distance: 4.8,
@@ -158,10 +161,7 @@ void main() {
 
     function buildCaustics(view) {
         const { gl, spec, caustic } = view;
-        const grid = Math.min(512, spec.cells * 2);
-        const spacing = CAUSTIC_SIZE / (CAUSTIC_MARGIN * grid);
-        const sigma = Math.max(0.7, 0.6 * spacing);
-        const pointSize = Math.ceil(4 * sigma);
+        const grid = Math.min(513, spec.cells + 1);
         gl.useProgram(caustic.program);
         gl.bindFramebuffer(gl.FRAMEBUFFER, view.causticMap.fbo);
         gl.viewport(0, 0, CAUSTIC_SIZE, CAUSTIC_SIZE);
@@ -178,13 +178,15 @@ void main() {
         gl.uniform3fv(caustic.u.uIor, spec.ior);
         gl.uniform1i(caustic.u.uGrid, grid);
         gl.uniform1f(caustic.u.uMargin, CAUSTIC_MARGIN);
-        gl.uniform1f(caustic.u.uPointSize, pointSize);
-        gl.uniform1f(caustic.u.uSigma, sigma);
-        gl.drawArrays(gl.POINTS, 0, grid * grid * 3);
+        gl.uniform1f(caustic.u.uTexelArea, (spec.side * CAUSTIC_MARGIN / CAUSTIC_SIZE) ** 2);
+        for (let channel = 0; channel < 3; channel++) {
+            gl.uniform1i(caustic.u.uChannel, channel);
+            gl.drawArrays(gl.TRIANGLES, 0, (grid - 1) * (grid - 1) * 6);
+        }
         gl.disable(gl.BLEND);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        // A flat surface lands grid² points, each of unit energy, evenly over the pool's share of the map: that is one.
-        return (CAUSTIC_SIZE * CAUSTIC_SIZE) / (CAUSTIC_MARGIN * CAUSTIC_MARGIN * grid * grid);
+        // The area ratio is one on a flat surface by construction.
+        return 1;
     }
 
     function camera(view) {
