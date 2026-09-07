@@ -11,7 +11,9 @@ optics for that liquid, one refractive index per colour channel and absorption f
 the lamp's caustics on the floor come from refracted rays, not from a texture. Nine liquids, water to
 carbon disulfide, each with its handbook density, viscosity and surface tension.
 
-The site at <https://undine.levvs.cc> is the pool: touch it, change the liquid, take the shaders.
+The site at <https://undine.levvs.cc> is the pool: touch it, change the liquid, take the shaders. The surface runs at
+the liquid's own ripple speed from its dispersion relation, the light is Caustikon's, and the caustics on the floor
+and walls are refracted rays.
 
 ## What is in the repository
 

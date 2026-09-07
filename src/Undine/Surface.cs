@@ -21,9 +21,17 @@ public sealed class Surface
 
     /// <param name="cells">Cells per side; the grid is square.</param>
     /// <param name="sizeMetres">Physical side of the grid, metres.</param>
-    /// <param name="depthMetres">Depth of the layer at rest, metres; sets the long-wave speed.</param>
+    /// <param name="depthMetres">Depth of the layer at rest, metres.</param>
     /// <param name="liquid">The liquid; its kinematic viscosity damps the motion.</param>
-    public Surface(int cells, double sizeMetres, double depthMetres, Liquid liquid)
+    /// <param name="wavelengthMetres">
+    /// The wavelength the field is tuned to: it runs at the liquid's phase speed for that wavelength and depth, from
+    /// the full gravity–capillary dispersion relation. Null runs it at the long-wave speed √(g·depth).
+    /// </param>
+    /// <param name="dampingPerSecond">
+    /// Decay of the velocity beyond viscosity, 1/s: what a pool's rim and surface film take out of the motion. Zero
+    /// leaves viscosity alone, which on water lets a ripple ring for minutes.
+    /// </param>
+    public Surface(int cells, double sizeMetres, double depthMetres, Liquid liquid, double? wavelengthMetres = null, double dampingPerSecond = 0d)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(cells, 4);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sizeMetres);
@@ -33,6 +41,14 @@ public sealed class Surface
         SizeMetres = sizeMetres;
         DepthMetres = depthMetres;
         Liquid = liquid;
+        if (wavelengthMetres is { } wavelength)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(wavelength);
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(dampingPerSecond);
+        WavelengthMetres = wavelengthMetres;
+        DampingPerSecond = dampingPerSecond;
         height = new float[cells * cells];
         velocity = new float[cells * cells];
         scratch = new float[cells * cells];
@@ -40,6 +56,12 @@ public sealed class Surface
 
     /// <summary>Cells per side.</summary>
     public int Cells { get; }
+
+    /// <summary>The wavelength the field runs at the speed of, or null for long waves.</summary>
+    public double? WavelengthMetres { get; }
+
+    /// <summary>Decay of the velocity beyond viscosity, 1/s.</summary>
+    public double DampingPerSecond { get; }
 
     /// <summary>Physical side of the grid, metres.</summary>
     public double SizeMetres { get; }
@@ -53,8 +75,8 @@ public sealed class Surface
     /// <summary>Cell size, metres.</summary>
     public double CellMetres => SizeMetres / Cells;
 
-    /// <summary>Long-wave speed √(g·depth), m/s.</summary>
-    public double WaveSpeed => Liquid.ShallowWaveSpeed(DepthMetres);
+    /// <summary>The speed the field runs at, m/s: the phase speed of <see cref="WavelengthMetres"/>, or √(g·depth) for long waves.</summary>
+    public double WaveSpeed => WavelengthMetres is { } wavelength ? Liquid.PhaseSpeed(wavelength, DepthMetres) : Liquid.ShallowWaveSpeed(DepthMetres);
 
     /// <summary>Largest stable step for one substep, s: the wave's CFL bound and the explicit diffusion bound, whichever is smaller.</summary>
     public double StableStep => Math.Min(CellMetres / (WaveSpeed * Math.Sqrt(2d)), 0.1 * CellMetres * CellMetres / Math.Max(1e-12, Liquid.KinematicViscosity));
@@ -104,6 +126,7 @@ public sealed class Surface
         float cell = (float)CellMetres;
         float c2 = (float)(WaveSpeed * WaveSpeed) / (cell * cell);
         float nu = (float)Liquid.KinematicViscosity / (cell * cell);
+        float decay = (float)Math.Exp(-DampingPerSecond * dt);
         // Laplacian of the height drives the velocity; Laplacian of the velocity is the viscous term.
         for (int y = 0; y < n; y++)
         {
@@ -112,7 +135,7 @@ public sealed class Surface
                 int i = Index(x, y);
                 float lapH = Laplacian(height, x, y);
                 float lapV = Laplacian(velocity, x, y);
-                scratch[i] = velocity[i] + (c2 * lapH + nu * lapV) * dt;
+                scratch[i] = (velocity[i] + (c2 * lapH + nu * lapV) * dt) * decay;
             }
         }
 

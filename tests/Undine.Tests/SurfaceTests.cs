@@ -69,6 +69,28 @@ public sealed class SurfaceTests
     }
 
     [TestMethod]
+    public void ATunedFieldRunsAtThePhaseSpeedOfItsWavelengthAndDampingTakesMotionOut()
+    {
+        // A 16 cm ripple on 1.2 m of water is a gravity wave in deep water, far slower than the long-wave limit.
+        Surface tuned = new(64, 1.0, 1.2, Liquids.Water, wavelengthMetres: 0.16);
+        Assert.AreEqual(Liquids.Water.PhaseSpeed(0.16, 1.2), tuned.WaveSpeed, 1e-12);
+        Assert.IsTrue(tuned.WaveSpeed < 0.6 && tuned.WaveSpeed > 0.4, $"16 cm ripple at {tuned.WaveSpeed:F3} m/s");
+        Assert.IsTrue(tuned.WaveSpeed < Liquid.ShallowWaveSpeed(1.2) / 5);
+
+        double MotionAfterASecond(double damping)
+        {
+            Surface surface = new(64, 1.0, 1.2, Liquids.Water, wavelengthMetres: 0.16, dampingPerSecond: damping);
+            surface.Disturb(0.5, 0.5, 0.04, -0.01);
+            surface.Step(1.0);
+            return surface.Motion();
+        }
+
+        double free = MotionAfterASecond(0), damped = MotionAfterASecond(2.0);
+        // Velocity decays as exp(−γt): two per second over a second leaves under a seventh of the motion.
+        Assert.IsTrue(damped < free * 0.15, $"free {free:E2}, damped {damped:E2}");
+    }
+
+    [TestMethod]
     public void AFlatSurfaceGivesAnEvenFloorAndRipplesFocusLight()
     {
         Surface flat = new(64, 1.0, 1.0, Liquids.Water);

@@ -9,5 +9,10 @@
   writes the numbers for a chosen liquid and depth into GLSL, HLSL, Unity, Unreal, Godot, Blender, glTF, three.js and
   C# with every value explained, and About. The three GLSL files it runs, the HLSL file and the Godot shader are
   served for download; `liquids.json` is baked from the package.
+- The pool reworked: the field runs at the liquid's phase speed for the touch wavelength (the full gravity–capillary
+  relation) instead of the long-wave √(g·h), with a damping slider and a wind slider (random pressure on the surface);
+  the deck stands above the waterline so the walls show dry, wet and refracted; the reflection meets the pool's own
+  walls; caustics are Gaussian splats over a map that reaches past the floor and light the walls too; the lining is
+  filtered against distance; the camera looks from the deck. `Surface` takes an optional wavelength and damping.
 - `LiquidOptics` treats an extinction table that stops short of the visible as no data instead of clamping to its
   edge (glycerol's infrared-only table had made the liquid black).

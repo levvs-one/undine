@@ -7,14 +7,25 @@ void main() {
     vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
     gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }`;
+    // Each landing point is a Gaussian splat a texel or so wide, so the map is smooth whatever fraction of a
+    // texel the point falls on; the splat integrates to one over the map.
     const POINT_FS = `#version 300 es
 precision highp float;
+uniform float uPointSize;
+uniform float uSigma;
 in vec3 vEnergy;
 out vec4 outColour;
-void main() { outColour = vec4(vEnergy, 1.0); }`;
-    const TAN_HALF = Math.tan(34 * Math.PI / 360);
+void main() {
+    vec2 r = (gl_PointCoord - 0.5) * uPointSize;
+    float g = exp(-dot(r, r) / (2.0 * uSigma * uSigma)) / (6.2831853 * uSigma * uSigma);
+    outColour = vec4(vEnergy * g, 1.0);
+}`;
+    const TAN_HALF = Math.tan(40 * Math.PI / 360);
     const CAUSTIC_SIZE = 512;
-    const G = 9.80665;
+    // The caustic map covers the floor and a margin around it, so light bound for the walls is kept.
+    const CAUSTIC_MARGIN = 1.5;
+    // The deck stands this far above the water at rest, so the walls show dry above the waterline.
+    const RIM = 0.12;
     const views = new Map();
     let sources = null;
 
@@ -72,7 +83,7 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
     }
 
     async function setup(canvas) {
-        const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: false });
+        const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: true });
         if (!gl || !gl.getExtension("EXT_color_buffer_float")) return null;
         const src = await loadSources();
         const view = {
@@ -81,7 +92,7 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
             caustic: link(gl, src.caustic, POINT_FS),
             render: link(gl, VERTEX, src.render),
             spec: null, cells: 0, a: null, b: null, causticMap: null,
-            yaw: 0.35, pitch: 0.62, distance: 5.5,
+            yaw: 0.35, pitch: 0.30, distance: 4.8,
             orbit: false, touch: null, drops: [], lastTime: 0,
             dragging: false, lastX: 0, lastY: 0, pointers: new Map(), pinch: 0,
             frame: 0, fallback: 0, frames: 0, fpsTime: 0, fps: 0,
@@ -99,7 +110,7 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
         view.causticMap = view.causticMap || makeTarget(gl, CAUSTIC_SIZE);
     }
 
-    const waveSpeed = spec => Math.sqrt(G * spec.depth);
+    const waveSpeed = spec => spec.waveSpeed;
     const cellSize = spec => spec.side / spec.cells;
     const stableStep = spec => Math.min(cellSize(spec) / (waveSpeed(spec) * Math.SQRT2), 0.1 * cellSize(spec) ** 2 / Math.max(1e-12, spec.kinematicViscosity));
     function lightDirection(spec) {
@@ -126,11 +137,14 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
             gl.uniform1f(sim.u.uDt, dt);
             gl.uniform1f(sim.u.uWaveSpeed, waveSpeed(spec));
             gl.uniform1f(sim.u.uViscosity, spec.kinematicViscosity);
+            gl.uniform1f(sim.u.uDamping, spec.damping);
+            gl.uniform1f(sim.u.uWind, spec.wind);
+            gl.uniform2f(sim.u.uSeed, Math.random() * 100, Math.random() * 100);
             if (push) {
                 gl.uniform2f(sim.u.uTouch, push.u, push.v);
-                gl.uniform1f(sim.u.uTouchRadius, Math.max(3, 0.05 / cellSize(spec)));
+                gl.uniform1f(sim.u.uTouchRadius, Math.max(1.5, spec.touchRadius / cellSize(spec)));
                 // A finger pushes the surface down by the touch strength per tenth of a second.
-                gl.uniform1f(sim.u.uTouchAmount, -spec.touch * dt / 0.1);
+                gl.uniform1f(sim.u.uTouchAmount, -spec.touch * (push.strength || 1) * dt / 0.1);
             } else {
                 gl.uniform2f(sim.u.uTouch, -1, -1);
                 gl.uniform1f(sim.u.uTouchRadius, 1);
@@ -144,7 +158,10 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
 
     function buildCaustics(view) {
         const { gl, spec, caustic } = view;
-        const grid = spec.cells;
+        const grid = Math.min(512, spec.cells * 2);
+        const spacing = CAUSTIC_SIZE / (CAUSTIC_MARGIN * grid);
+        const sigma = Math.max(0.7, 0.6 * spacing);
+        const pointSize = Math.ceil(4 * sigma);
         gl.useProgram(caustic.program);
         gl.bindFramebuffer(gl.FRAMEBUFFER, view.causticMap.fbo);
         gl.viewport(0, 0, CAUSTIC_SIZE, CAUSTIC_SIZE);
@@ -160,11 +177,14 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
         gl.uniform3fv(caustic.u.uLight, lightDirection(spec));
         gl.uniform3fv(caustic.u.uIor, spec.ior);
         gl.uniform1i(caustic.u.uGrid, grid);
+        gl.uniform1f(caustic.u.uMargin, CAUSTIC_MARGIN);
+        gl.uniform1f(caustic.u.uPointSize, pointSize);
+        gl.uniform1f(caustic.u.uSigma, sigma);
         gl.drawArrays(gl.POINTS, 0, grid * grid * 3);
         gl.disable(gl.BLEND);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        // A flat surface lands grid² points, each spread over four cells, on CAUSTIC_SIZE² cells: that is one.
-        return (CAUSTIC_SIZE * CAUSTIC_SIZE) / (grid * grid);
+        // A flat surface lands grid² points, each of unit energy, evenly over the pool's share of the map: that is one.
+        return (CAUSTIC_SIZE * CAUSTIC_SIZE) / (CAUSTIC_MARGIN * CAUSTIC_MARGIN * grid * grid);
     }
 
     function camera(view) {
@@ -194,6 +214,10 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
 
     function fit(view) {
         const c = view.canvas;
+        if (view.forceSize) {
+            [c.width, c.height] = view.forceSize;
+            return;
+        }
         const narrow = Math.min(window.innerWidth, document.documentElement.clientWidth) < 700;
         const dpr = narrow ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
         const width = Math.max(1, Math.min(1400, Math.round(c.clientWidth * dpr)));
@@ -224,8 +248,10 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
         gl.bindTexture(gl.TEXTURE_2D, view.causticMap.texture);
         gl.uniform1i(render.u.uCaustic, 1);
         gl.uniform1f(render.u.uCausticNorm, norm);
+        gl.uniform1f(render.u.uMargin, CAUSTIC_MARGIN);
         gl.uniform1f(render.u.uSide, spec.side);
         gl.uniform1f(render.u.uDepth, spec.depth);
+        gl.uniform1f(render.u.uRim, RIM);
         gl.uniform3fv(render.u.uIor, spec.ior);
         gl.uniform3fv(render.u.uAlpha, spec.alpha);
         gl.uniform3fv(render.u.uLight, lightDirection(spec));
@@ -303,7 +329,7 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
             const rect = c.getBoundingClientRect();
             if (view.dragging) {
                 view.yaw -= (e.clientX - view.lastX) * 0.008;
-                view.pitch = Math.min(1.5, Math.max(0.12, view.pitch + (e.clientY - view.lastY) * 0.008));
+                view.pitch = Math.min(1.5, Math.max(0.08, view.pitch + (e.clientY - view.lastY) * 0.008));
                 view.lastX = e.clientX;
                 view.lastY = e.clientY;
             } else if (view.touch) {
@@ -357,7 +383,8 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
         drop(id) {
             const view = views.get(document.getElementById(id));
             if (!view || !view.spec) return;
-            view.drops.push({ u: view.spec.cells * (0.25 + 0.5 * Math.random()), v: view.spec.cells * (0.25 + 0.5 * Math.random()), until: performance.now() + 120 });
+            // A drop is a short, hard push: a few touches' worth in a tenth of a second.
+            view.drops.push({ u: view.spec.cells * (0.25 + 0.5 * Math.random()), v: view.spec.cells * (0.25 + 0.5 * Math.random()), strength: 3, until: performance.now() + 100 });
         },
         calm(id) {
             const view = views.get(document.getElementById(id));
@@ -374,6 +401,18 @@ void main() { outColour = vec4(vEnergy, 1.0); }`;
         fps(id) {
             const view = views.get(document.getElementById(id));
             return view ? view.fps : 0;
+        },
+        // One frame rendered now and returned as a PNG data URL; for checking the picture without a screen.
+        snapshot(id, width, height, seconds) {
+            const view = views.get(document.getElementById(id));
+            if (!view || !view.spec) return null;
+            view.forceSize = [width || 1280, height || 800];
+            surfaces(view);
+            for (let i = 0; i < Math.round((seconds || 0) * 60); i++) stepSurface(view, 1 / 60);
+            frame(view, view.lastTime + 1000 / 60);
+            const url = view.canvas.toDataURL("image/png");
+            view.forceSize = null;
+            return url;
         },
     };
 })();

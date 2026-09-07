@@ -1,8 +1,9 @@
 #version 300 es
-// Undine: a pool seen from above. For each pixel the camera ray meets the surface, splits by the exact Fresnel
-// equations of the liquid, reflects the sky and refracts per colour channel down to the floor, where the light of
-// the lamp is what the caustic map says it is. Absorption over the path in the liquid comes from the liquid's own
-// k table. The indices and absorption per metre are the liquid's numbers from Caustikon; nothing here is tuned.
+// Undine: a pool seen from the deck. For each pixel the camera ray meets the surface, splits by the exact Fresnel
+// equations of the liquid, reflects the sky or the pool's own walls and refracts per colour channel down to the
+// floor or a wall, where the light of the lamp is what the caustic map says it is. Absorption over the path in the
+// liquid comes from the liquid's own k table. The indices and absorption per metre are the liquid's numbers from
+// Caustikon; nothing here is tuned to look like water, it is lit like water.
 precision highp float;
 out vec4 outColour;
 
@@ -11,16 +12,21 @@ uniform vec3 uEye, uForward, uRight, uUp;
 uniform float uTanHalf;
 
 uniform sampler2D uState;      // height in r, metres, over the pool
-uniform sampler2D uCaustic;    // lamp light on the floor, one on open floor
+uniform sampler2D uCaustic;    // lamp light on the floor plane, one on open floor, over uMargin × the pool
 uniform float uCausticNorm;
+uniform float uMargin;
 uniform float uSide;           // pool side, metres
 uniform float uDepth;          // floor below the rest level, metres
+uniform float uRim;            // deck above the rest level, metres: the walls are dry up there
 uniform vec3 uIor;             // index at 610, 550, 465 nm
 uniform vec3 uAlpha;           // absorption per metre at the same wavelengths
 uniform vec3 uLight;           // unit direction the light travels
 uniform float uLampStrength;
 uniform int uFloor;            // 0 tiles, 1 sand, 2 dark
 uniform float uExposure;
+
+const float TILE = 0.25;       // metres
+const float AMBIENT = 0.24;    // skylight relative to the lamp at full strength
 
 float fresnel(float cosI, float n1, float n2) {
     float eta = n1 / n2;
@@ -61,29 +67,37 @@ float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
 
-vec3 floorColour(vec2 xz) {
+// A checkerboard averaged over a footprint of width w in tile units, so distant tiles go grey instead of shimmering.
+float checker(vec2 q, float w) {
+    vec2 ww = vec2(max(w, 0.001));
+    vec2 i = 2.0 * (abs(fract((q - 0.5 * ww) / 2.0) - 0.5) - abs(fract((q + 0.5 * ww) / 2.0) - 0.5)) / ww;
+    return 0.5 - 0.5 * i.x * i.y;
+}
+
+// Albedo of the pool lining at a point; w is the width the pixel covers there, in metres.
+vec3 lining(vec2 xz, float w) {
     if (uFloor == 1) {
-        float g = 0.55 + 0.12 * (hash(floor(xz * 40.0)) - 0.5) + 0.06 * (hash(floor(xz * 7.0)) - 0.5);
-        return vec3(0.86, 0.78, 0.60) * g;
+        float fine = 0.12 * (hash(floor(xz * 40.0)) - 0.5) * (1.0 - smoothstep(0.01, 0.05, w));
+        float coarse = 0.06 * (hash(floor(xz * 7.0)) - 0.5) * (1.0 - smoothstep(0.07, 0.3, w));
+        return vec3(0.86, 0.78, 0.60) * (0.55 + fine + coarse);
     }
     if (uFloor == 2) return vec3(0.06, 0.07, 0.08);
-    // Pool tiles 25 cm with a grout line; two blues so the refraction has edges to bend.
-    vec2 tile = xz / 0.25;
-    vec2 f = abs(fract(tile) - 0.5);
-    float grout = 1.0 - smoothstep(0.44, 0.48, max(f.x, f.y));
-    bool dark = mod(floor(tile.x) + floor(tile.y), 2.0) == 0.0;
-    vec3 colour = dark ? vec3(0.42, 0.62, 0.72) : vec3(0.82, 0.90, 0.92);
-    return mix(vec3(0.75, 0.76, 0.74), colour, grout);
+    vec2 q = xz / TILE;
+    float wq = w / TILE;
+    vec2 f = abs(fract(q) - 0.5);
+    float grout = smoothstep(0.455 - wq, 0.455 + wq, max(f.x, f.y));
+    vec3 colour = mix(vec3(0.66, 0.82, 0.87), vec3(0.24, 0.47, 0.62), checker(q, wq));
+    return mix(colour, vec3(0.72, 0.73, 0.71), grout);
 }
 
 // The sky the water reflects: bright haze at the horizon, deep blue overhead, the sun as a small disc with a glow.
 // Ripples show as the reflection slides between the haze and the blue, and as glints when a slope catches the sun.
 vec3 sky(vec3 d) {
     float t = clamp(d.y, 0.0, 1.0);
-    vec3 s = mix(vec3(0.74, 0.78, 0.84), vec3(0.18, 0.34, 0.66), pow(t, 0.45));
+    vec3 s = mix(vec3(0.80, 0.84, 0.90), vec3(0.20, 0.38, 0.72), pow(t, 0.5));
     vec3 toLamp = -uLight;
     float key = max(0.0, dot(d, toLamp));
-    s += vec3(1.0, 0.96, 0.88) * uLampStrength * (40.0 * smoothstep(0.9990, 0.9997, key) + 1.2 * pow(key, 24.0) + 0.25 * pow(key, 4.0));
+    s += vec3(1.0, 0.96, 0.88) * uLampStrength * (60.0 * smoothstep(0.99985, 0.99997, key) + 1.5 * pow(key, 40.0) + 0.3 * pow(key, 6.0));
     return s;
 }
 
@@ -92,18 +106,75 @@ vec3 tonemap(vec3 c) {
     return clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), 0.0, 1.0);
 }
 
-float compand(float c) {
-    return c <= 0.0031308 ? 12.92 * c : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+vec3 compand(vec3 c) {
+    return mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
 }
 
-// Light at a floor point: the room plus the lamp through the caustic map, absorbed on the way back up.
-vec3 floorLit(vec2 xz, float pathMetres, int channel) {
-    vec2 uv = xz / uSide + 0.5;
-    vec3 lamp = texture(uCaustic, uv).rgb * uCausticNorm;
-    vec3 light = vec3(0.22) + uLampStrength * 0.55 * max(0.0, -uLight.y) * lamp;
-    vec3 colour = floorColour(xz) * light;
-    float t = exp(-uAlpha[channel] * pathMetres);
-    return colour * t;
+vec3 lampMap(vec2 xz) {
+    return texture(uCaustic, xz / (uSide * uMargin) + 0.5).rgb * uCausticNorm;
+}
+
+// Light on the floor at xz: skylight, shaded in the corners, plus the lamp through the caustic map.
+vec3 floorLight(vec2 xz) {
+    float halfSide = uSide * 0.5;
+    vec2 gap = halfSide - abs(xz);
+    float ao = 1.0 - 0.4 * (exp(-gap.x / 0.35) + exp(-gap.y / 0.35));
+    return vec3(AMBIENT * ao) + uLampStrength * max(0.0, -uLight.y) * lampMap(xz);
+}
+
+// Light on a wall point under water: the beam of the lamp that passes it would land on the floor plane further on;
+// the map there, scaled from the floor's incidence to the wall's, is the light on the wall.
+vec3 wallLight(vec3 p, vec3 wallNormal, vec3 lampInside) {
+    float halfSide = uSide * 0.5;
+    float fromFloor = p.y + uDepth;
+    float along = wallNormal.x != 0.0 ? halfSide - abs(p.z) : halfSide - abs(p.x);
+    float ao = 1.0 - 0.4 * (exp(-fromFloor / 0.35) + exp(-along / 0.35));
+    float cosWall = max(0.0, dot(-lampInside, wallNormal));
+    float cosFloor = max(1e-3, -lampInside.y);
+    float t = fromFloor / cosFloor;
+    vec3 lamp = cosWall > 0.0 ? lampMap(p.xz + lampInside.xz * t) * (cosWall / cosFloor) : vec3(0.0);
+    return vec3(AMBIENT * ao) + uLampStrength * max(0.0, -uLight.y) * lamp;
+}
+
+// A wall point above the waterline: dry tiles lit by the sky and the lamp, a wet band where the water laps.
+vec3 dryWall(vec3 p, vec3 wallNormal, float w) {
+    vec2 xz = wallNormal.x != 0.0 ? vec2(p.z, p.y) : vec2(p.x, p.y);
+    vec3 albedo = lining(xz, w);
+    float wet = 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.03, p.y));
+    float direct = max(0.0, dot(-uLight, wallNormal));
+    vec3 light = vec3(AMBIENT * 1.4) + uLampStrength * vec3(1.0, 0.97, 0.92) * direct;
+    return albedo * wet * light;
+}
+
+// The deck around the pool: coping stones along the rim, then paving; lit by the sky and the lamp directly.
+vec3 deck(vec3 hit, float w) {
+    float halfSide = uSide * 0.5;
+    float edge = max(abs(hit.x), abs(hit.z)) - halfSide;
+    float grain = 0.05 * (hash(floor(hit.xz * 30.0)) - 0.5) * (1.0 - smoothstep(0.02, 0.08, w));
+    vec3 stone = vec3(0.62, 0.58, 0.52) * (1.0 + grain);
+    vec3 coping = vec3(0.78, 0.75, 0.69);
+    vec3 albedo = mix(coping, stone, smoothstep(0.28, 0.32, edge));
+    float seamDistance = min(abs(fract(hit.x) - 0.5), abs(fract(hit.z) - 0.5));
+    float seam = 1.0 - 0.25 * (1.0 - smoothstep(0.0, 0.012 + w, seamDistance)) * step(edge, 0.30);
+    float lip = 1.0 - 0.3 * exp(-edge / 0.02);
+    vec3 light = vec3(AMBIENT * 1.6) + uLampStrength * vec3(1.0, 0.97, 0.92) * max(0.0, -uLight.y);
+    return albedo * seam * lip * light;
+}
+
+// Where a ray from p along d leaves the pool footprint, and the wall it leaves through.
+float exitWall(vec3 p, vec3 d, out vec3 wallNormal) {
+    float halfSide = uSide * 0.5;
+    float best = 1e9;
+    wallNormal = vec3(0.0);
+    if (abs(d.x) > 1e-6) {
+        float tx = ((d.x > 0.0 ? halfSide : -halfSide) - p.x) / d.x;
+        if (tx < best) { best = tx; wallNormal = vec3(d.x > 0.0 ? -1.0 : 1.0, 0.0, 0.0); }
+    }
+    if (abs(d.z) > 1e-6) {
+        float tz = ((d.z > 0.0 ? halfSide : -halfSide) - p.z) / d.z;
+        if (tz < best) { best = tz; wallNormal = vec3(0.0, 0.0, d.z > 0.0 ? -1.0 : 1.0); }
+    }
+    return best;
 }
 
 void main() {
@@ -112,30 +183,54 @@ void main() {
     float sx = (px.x / uResolution.x * 2.0 - 1.0) * uTanHalf * aspect;
     float sy = (px.y / uResolution.y * 2.0 - 1.0) * uTanHalf;
     vec3 dir = normalize(uForward + uRight * sx + uUp * sy);
-
-    if (dir.y >= -1e-4) { outColour = vec4(vec3(compand(tonemap(sky(dir)).r), compand(tonemap(sky(dir)).g), compand(tonemap(sky(dir)).b)), 1.0); return; }
-    float t = -uEye.y / dir.y;
-    vec3 hit = uEye + dir * t;
+    float pixelAngle = 2.0 * uTanHalf / uResolution.y;
     float halfSide = uSide * 0.5;
-    if (abs(hit.x) > halfSide || abs(hit.z) > halfSide) {
-        // The deck around the pool.
-        float edge = max(abs(hit.x), abs(hit.z)) - halfSide;
-        vec3 deck = vec3(0.80, 0.77, 0.70) * (0.9 - 0.25 * exp(-edge * 6.0));
-        vec3 c = tonemap(deck);
-        outColour = vec4(compand(c.r), compand(c.g), compand(c.b), 1.0);
+
+    if (dir.y >= -1e-4) { outColour = vec4(compand(tonemap(sky(dir))), 1.0); return; }
+    // The deck plane first: outside the pool it is the deck, inside the ray drops past the dry walls to the water.
+    float tDeck = (uRim - uEye.y) / dir.y;
+    vec3 onDeck = uEye + dir * tDeck;
+    if (tDeck > 0.0 && (abs(onDeck.x) > halfSide || abs(onDeck.z) > halfSide)) {
+        float w = tDeck * pixelAngle / max(0.05, -dir.y);
+        outColour = vec4(compand(tonemap(deck(onDeck, w))), 1.0);
         return;
     }
-
-    // Meet the displaced surface: two corrections toward y = h(x, z) along the ray.
-    for (int i = 0; i < 2; i++) {
+    float t = -uEye.y / dir.y;
+    vec3 hit = uEye + dir * t;
+    // Meet the displaced surface: corrections toward y = h(x, z) along the ray.
+    for (int i = 0; i < 3; i++) {
         float h = height(hit.xz);
         t = (h - uEye.y) / dir.y;
         hit = uEye + dir * t;
     }
+    if (abs(hit.x) > halfSide || abs(hit.z) > halfSide) {
+        // The ray met a wall above the water before reaching the surface.
+        vec3 wallNormal;
+        float tw = exitWall(onDeck, dir, wallNormal) + tDeck;
+        vec3 onWall = uEye + dir * tw;
+        float w = tw * pixelAngle / max(0.05, abs(dot(dir, wallNormal)));
+        outColour = vec4(compand(tonemap(dryWall(onWall, wallNormal, w))), 1.0);
+        return;
+    }
+
     vec3 normal = normalAt(hit.xz);
     float cosI = clamp(-dot(dir, normal), 0.0, 1.0);
     vec3 reflected = reflect(dir, normal);
-    vec3 skyColour = sky(reflected);
+    if (reflected.y < 0.002) reflected = normalize(vec3(reflected.x, 0.002, reflected.z));
+    // The reflection: a dry wall of the pool when the ray meets one below the deck level, the sky otherwise.
+    vec3 reflectedColour;
+    {
+        vec3 wallNormal;
+        float tw = exitWall(hit, reflected, wallNormal);
+        vec3 onWall = hit + reflected * tw;
+        if (onWall.y < uRim) {
+            float w = (t + tw) * pixelAngle / max(0.05, abs(dot(reflected, wallNormal)));
+            reflectedColour = dryWall(onWall, wallNormal, w);
+        } else {
+            reflectedColour = sky(reflected);
+        }
+    }
+    vec3 lampInside = refract(uLight, vec3(0.0, 1.0, 0.0), 1.0 / uIor.y);
 
     vec3 colour = vec3(0.0);
     for (int c = 0; c < 3; c++) {
@@ -144,24 +239,26 @@ void main() {
         vec3 inside = refract(dir, normal, 1.0 / n);
         float through = 0.0;
         if (dot(inside, inside) > 0.5 && inside.y < 0.0) {
-            // Down to the floor, unless a wall comes first: the pool has four vertical walls in the same tiles.
+            // Down to the floor, unless a wall comes first: four vertical walls in the same lining.
             float drop = uDepth + hit.y;
             float path = drop / (-inside.y);
-            float wall = 1e9;
-            if (abs(inside.x) > 1e-6) wall = min(wall, ((inside.x > 0.0 ? halfSide : -halfSide) - hit.x) / inside.x);
-            if (abs(inside.z) > 1e-6) wall = min(wall, ((inside.z > 0.0 ? halfSide : -halfSide) - hit.z) / inside.z);
+            vec3 wallNormal;
+            float wall = exitWall(hit, inside, wallNormal);
+            // The footprint of the pixel where the ray lands, widened by the grazing angle; refraction narrows it by n.
             if (wall < path) {
                 vec3 onWall = hit + inside * wall;
-                // Wall tiles run along the wall and down it; the lamp reaches them through the water more weakly.
-                vec2 wallXz = abs(inside.x) * abs(halfSide - abs(onWall.x)) < abs(inside.z) * abs(halfSide - abs(onWall.z)) ? vec2(onWall.z, onWall.y) : vec2(onWall.x, onWall.y);
-                vec3 wallColour = floorColour(wallXz) * (0.22 + uLampStrength * 0.3 * max(0.0, -uLight.y));
-                through = wallColour[c] * exp(-uAlpha[c] * wall);
+                float w = (t + wall) * pixelAngle / (n * max(0.05, abs(dot(inside, wallNormal))));
+                vec2 wallXz = wallNormal.x != 0.0 ? vec2(onWall.z, onWall.y) : vec2(onWall.x, onWall.y);
+                through = (lining(wallXz, w) * wallLight(onWall, wallNormal, lampInside))[c] * exp(-uAlpha[c] * wall);
             } else {
-                through = floorLit(hit.xz + inside.xz * path, path, c)[c];
+                vec2 onFloor = hit.xz + inside.xz * path;
+                float w = (t + path) * pixelAngle / (n * max(0.05, -inside.y));
+                through = (lining(onFloor, w) * floorLight(onFloor))[c] * exp(-uAlpha[c] * path);
             }
+        } else {
+            through = reflectedColour[c];
         }
-        colour[c] = r * skyColour[c] + (1.0 - r) * through;
+        colour[c] = r * reflectedColour[c] + (1.0 - r) * through;
     }
-    colour = tonemap(colour);
-    outColour = vec4(compand(colour.r), compand(colour.g), compand(colour.b), 1.0);
+    outColour = vec4(compand(tonemap(colour)), 1.0);
 }
