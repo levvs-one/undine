@@ -1,107 +1,97 @@
-// A scratch probe for the flow solver: prints where a still puddle moves, how far a dam break runs, how a cylinder of
-// glycerol spreads. Not shipped; run with dotnet run --project tools/Undine.Probe.
+// A scratch probe for the solvers: prints how a stretched free drop of water rings for a few tension calibrations,
+// and how a settled block and a dam break behave. Not shipped; run with dotnet run --project tools/Undine.Probe.
 using System.Globalization;
+using System.Numerics;
 using Undine;
 
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 const double G = 9.80665;
 
+string mode = args.Length > 0 ? args[0] : "drop";
+if (mode == "drop")
 {
-    ShallowFlow flow = new(64, 0.32, Liquids.Water);
-    flow.ShapeFloor((x, y) => 0.01 * (Math.Sin(x * 60) + Math.Cos(y * 45)) + 0.02 * (x > 0.2 ? 1 : 0));
-    const double level = 0.03;
-    for (int y = 0; y < 64; y++)
-    {
-        for (int x = 0; x < 64; x++)
-        {
-            double t = level - flow.FloorAt(x, y);
-            if (t > 0)
-            {
-                flow.Place((x + 0.5) * flow.CellMetres, (y + 0.5) * flow.CellMetres, flow.CellMetres * 0.4, t);
-            }
-        }
-    }
+    Liquid liquid = args.Length > 1 ? Liquids.Find(args[1]) ?? Liquids.Water : Liquids.Water;
+    float calibration = args.Length > 2 ? float.Parse(args[2], CultureInfo.InvariantCulture) : 1f;
+    float curvature = args.Length > 3 ? float.Parse(args[3], CultureInfo.InvariantCulture) : 1f;
+    const float radius = 0.01f;
+    ParticleFluid fluid = new(liquid, 0.001, new Vector3(0.1f, 0.1f, 0.1f)) { GravityVector = Vector3.Zero, TensionCalibration = calibration, CurvatureWeight = curvature };
+    Vector3 centre = new(0.05f, 0.05f, 0.05f);
+    float stretch = 1.15f, squeeze = 1f / MathF.Sqrt(stretch);
+    fluid.FillEllipsoid(centre, new Vector3(radius * stretch, radius * squeeze, radius * squeeze));
 
-    for (int step = 0; step < 5; step++)
+    double omega = Math.Sqrt(8 * liquid.SurfaceTensionMNPerM * 1e-3 / (liquid.DensityKgPerM3 * Math.Pow(radius, 3)));
+    double period = 2 * Math.PI / omega;
+    Console.WriteLine($"{liquid.Name}: {fluid.Count} particles, Rayleigh period {period:F3} s, calibration {calibration}, gamma {fluid.Cohesion:F3}, lattice density {fluid.LatticeRestDensity:F1}, mass {fluid.Mass:E3}, step {fluid.StableStep():E3}");
+    fluid.Step(fluid.StableStep());
+    Console.WriteLine($"after one substep: NaN positions {fluid.Positions.Count(p => float.IsNaN(p.X))}, vmax {fluid.Velocities.Where(v => !float.IsNaN(v.X)).Select(v => v.Length()).DefaultIfEmpty(-1f).Max():E3}, correction {fluid.LastCorrection:E3} m, tension {fluid.LastTension:E3}, viscous {fluid.LastViscous:E3}");
+    const double dt = 1.0 / 240;
+    for (int step = 0; step * dt < 2.5 * period; step++)
     {
-        flow.Step(0.01);
-        double fastest = 0;
-        int bx = 0, by = 0;
-        for (int y = 0; y < 64; y++)
+        fluid.Step(dt);
+        if (step % 6 == 0)
         {
-            for (int x = 0; x < 64; x++)
+            float fastest = fluid.Velocities.Max(v => v.Length());
+            Vector3 mean = Vector3.Zero;
+            foreach (Vector3 p in fluid.Positions) mean += p;
+            mean /= fluid.Count;
+            double sx = 0, sy = 0; int strays = 0;
+            foreach (Vector3 p in fluid.Positions)
             {
-                (double ux, double uy) = flow.VelocityAt(x, y);
-                double u = Math.Sqrt(ux * ux + uy * uy);
-                if (u > fastest)
-                {
-                    fastest = u;
-                    bx = x;
-                    by = y;
-                }
+                Vector3 d = p - mean;
+                sx += d.X * d.X; sy += d.Y * d.Y;
+                if (d.Length() > 1.5f * radius) strays++;
             }
+            Console.WriteLine($"t={step * dt:F3} rmsAspect={Math.Sqrt(sx / sy):F3} rmsX={Math.Sqrt(sx / fluid.Count):F5} strays={strays} vmax={fastest:F3} tension={fluid.LastTension:F1}");
         }
-
-        Console.WriteLine($"still: t={(step + 1) * 0.01:F2} fastest {fastest:E2} at ({bx},{by}) h={flow.ThicknessAt(bx, by):E3} floor={flow.FloorAt(bx, by):F4} surface={flow.ThicknessAt(bx, by) + flow.FloorAt(bx, by):F5}");
-        if (bx > 0) Console.WriteLine($"   left  h={flow.ThicknessAt(bx - 1, by):E3} floor={flow.FloorAt(bx - 1, by):F4}");
-        if (bx < 63) Console.WriteLine($"   right h={flow.ThicknessAt(bx + 1, by):E3} floor={flow.FloorAt(bx + 1, by):F4}");
     }
 }
-
+else if (mode == "rest")
 {
-    const double h0 = 0.005, held = 0.04;
-    ShallowFlow flow = new(256, 0.256, Liquids.Water);
-    for (int y = 0; y < 256; y++)
+    // No gravity, no walls nearby: a block on its lattice in the middle of the box must simply sit there.
+    ParticleFluid fluid = new(Liquids.Water, 0.005, new Vector3(0.3f, 0.3f, 0.3f)) { GravityVector = Vector3.Zero };
+    if (args.Length > 1) fluid.TensionCalibration = float.Parse(args[1], CultureInfo.InvariantCulture);
+    if (args.Length > 2) fluid.Iterations = int.Parse(args[2], CultureInfo.InvariantCulture);
+    fluid.FillBox(new Vector3(0.1f, 0.1f, 0.1f), new Vector3(0.2f, 0.15f, 0.2f));
+    for (int i = 0; i < 10; i++)
     {
-        for (int x = 0; x < 256; x++)
-        {
-            if ((x + 0.5) * flow.CellMetres < held)
-            {
-                flow.Place((x + 0.5) * flow.CellMetres, (y + 0.5) * flow.CellMetres, flow.CellMetres * 0.4, h0);
-            }
-        }
-    }
-
-    for (int i = 1; i <= 4; i++)
-    {
-        flow.Step(0.02);
-        double t = i * 0.02;
-        string line = "";
-        foreach (double threshold in new[] { 1e-3, 1e-4, 1e-5, 1e-6 })
-        {
-            double front = 0;
-            for (int x = 0; x < 256; x++)
-            {
-                if (flow.ThicknessAt(x, 128) > threshold) front = (x + 0.5) * flow.CellMetres;
-            }
-
-            line += $" >{threshold:E0}: {front:F4}";
-        }
-
-        Console.WriteLine($"dam: t={t:F2} Ritter={held + 2 * Math.Sqrt(G * h0) * t:F4}{line}");
+        fluid.Step(0.05);
+        Console.WriteLine($"t={(i + 1) * 0.05:F2} vmax={fluid.Velocities.Max(v => v.Length()):E2} correction={fluid.LastCorrection:E2} tension={fluid.LastTension:E2}");
     }
 }
-
+else if (mode == "settle")
 {
-    Liquid glycerol = Liquids.Glycerol;
-    const double radius0 = 0.01, thickness0 = 0.032;
-    double volume = Math.PI * radius0 * radius0 * thickness0;
-    ShallowFlow flow = new(128, 0.128, glycerol);
-    flow.Place(0.064, 0.064, radius0, thickness0);
-    double Huppert(double t) => 0.894 * Math.Pow(G * volume * volume * volume * t / (3 * glycerol.KinematicViscosity), 1.0 / 8);
-    for (int i = 1; i <= 8; i++)
+    Liquid liquid = args.Length > 1 ? Liquids.Find(args[1]) ?? Liquids.Water : Liquids.Water;
+    ParticleFluid fluid = new(liquid, 0.005, new Vector3(0.1f, 0.2f, 0.1f));
+    if (args.Length > 2) fluid.Iterations = int.Parse(args[2], CultureInfo.InvariantCulture);
+    if (args.Length > 3) fluid.Smoothing = float.Parse(args[3], CultureInfo.InvariantCulture);
+    if (args.Length > 4) fluid.TensionCalibration = float.Parse(args[4], CultureInfo.InvariantCulture);
+    if (args.Length > 5) fluid.MaxStep = 1.0 / double.Parse(args[5], CultureInfo.InvariantCulture);
+    fluid.FillBox(Vector3.Zero, new Vector3(0.1f, 0.05f, 0.1f));
+    Console.WriteLine($"iterations {fluid.Iterations} smoothing {fluid.Smoothing} gamma {fluid.Cohesion:F3} step {fluid.StableStep():E2} lattice {fluid.LatticeRestDensity:F1} wall at floor {fluid.WallDensityAt(new Vector3(0.05f, 0.0025f, 0.05f)):F1}, one up {fluid.WallDensityAt(new Vector3(0.05f, 0.0075f, 0.05f)):F1}, corner {fluid.WallDensityAt(new Vector3(0.0025f, 0.0025f, 0.0025f)):F1}");
+    fluid.Step(fluid.StableStep());
+    Console.WriteLine($"after one substep NaN {fluid.Positions.Count(p => float.IsNaN(p.X))} correction {fluid.LastCorrection:E2} tension {fluid.LastTension:E2} viscous {fluid.LastViscous:E2}");
+    for (int i = 0; i < 12; i++)
     {
-        flow.Step(1);
-        double peak = 0;
-        for (int y = 0; y < 128; y++) for (int x = 0; x < 128; x++) peak = Math.Max(peak, flow.ThicknessAt(x, y));
-        string line = "";
-        foreach (double frac in new[] { 0.5, 0.2, 0.05, 0.01 })
+        fluid.Step(0.05);
+        float[] heights = fluid.Positions.Select(p => p.Y).OrderBy(y => y).ToArray();
+        float top = heights[(int)(heights.Length * 0.98)] + fluid.Spacing / 2;
+        Console.WriteLine($"t={(i + 1) * 0.05:F2} top={top:F4} vmax={fluid.Velocities.Max(v => v.Length()):F3}");
+    }
+}
+else
+{
+    const float height = 0.1f, width = 0.1f;
+    foreach (string name in new[] { "Water", "Glycerol" })
+    {
+        Liquid liquid = Liquids.Find(name)!;
+        ParticleFluid fluid = new(liquid, 0.005, new Vector3(0.5f, 0.2f, 0.03f));
+        fluid.FillBox(Vector3.Zero, new Vector3(width, height, 0.03f));
+        for (int i = 1; i <= 6; i++)
         {
-            int wet = 0;
-            for (int y = 0; y < 128; y++) for (int x = 0; x < 128; x++) if (flow.ThicknessAt(x, y) > frac * peak) wet++;
-            line += $" >{frac:F2}: {Math.Sqrt(wet * flow.CellMetres * flow.CellMetres / Math.PI):F4}";
+            fluid.Step(0.03);
+            float t = i * 0.03f;
+            float[] xs = fluid.Positions.Select(p => p.X).OrderByDescending(x => x).ToArray();
+            Console.WriteLine($"{name} t={t:F2} front={xs[(int)(xs.Length * 0.01)]:F3} Ritter={width + 2 * Math.Sqrt(G * height) * t:F3}");
         }
-
-        Console.WriteLine($"honey: t={i} Huppert={Huppert(i):F4} peak={peak:E2} V={flow.Volume():E3}{line}");
     }
 }
