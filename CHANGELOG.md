@@ -14,6 +14,11 @@
   the deck stands above the waterline so the walls show dry, wet and refracted; the reflection meets the pool's own
   walls; caustics are Gaussian splats over a map that reaches past the floor and light the walls too; the lining is
   filtered against distance; the camera looks from the deck. `Surface` takes an optional wavelength and damping.
+- Particles: `ParticleFluid`, position-based fluids with the liquid's density, viscosity (Monaghan) and surface
+  tension (Akinci cohesion, strength from σ by the pairwise-force relation); the constraint against the rest lattice
+  with the walls' hidden share counted, under-relaxed, forces before the projection, XSPH. Tests for every liquid: a
+  block settles to its volume and to rest, a dam break within Ritter's bound, a stretched free drop rounds itself on
+  Rayleigh's time and stays whole. The site's Splash page runs it on the GPU (bitonic cell sort, screen-space fluid).
 - Pouring: `ShallowFlow`, the shallow-water equations over a floor with a no-slip bottom (drag 3νu/h²) that blends
   into Huppert's thin-film flux when the drag relaxes the film within a step; HLL flux, hydrostatic reconstruction,
   walls, a spout. Tests for every liquid: a still puddle on an uneven floor stays still and keeps its volume, a

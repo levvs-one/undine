@@ -38,6 +38,6 @@ jobs:
 
       - name: Require the site to serve the shaders it hands out
         run: |
-          for f in undine-water-sim.frag.glsl undine-water-fft.frag.glsl undine-water-evolve.frag.glsl undine-water-caustics.vert.glsl undine-water.frag.glsl undine-flow-step.frag.glsl undine-flow.frag.glsl UndineWater.hlsl undine_water.gdshader; do
+          for f in undine-water-sim.frag.glsl undine-water-fft.frag.glsl undine-water-evolve.frag.glsl undine-water-caustics.vert.glsl undine-water.frag.glsl undine-flow-step.frag.glsl undine-flow.frag.glsl undine-particles.glsl undine-particles-render.glsl UndineWater.hlsl undine_water.gdshader; do
             cmp "shaders/$f" "site/Undine.Site/wwwroot/shaders/$f"
           done

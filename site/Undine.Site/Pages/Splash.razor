@@ -1,0 +1,216 @@
+@page "/splash"
+@using System.Numerics
+@inject IJSRuntime Js
+@inject NavigationManager Navigation
+@inherits LocalizedComponent
+@implements IDisposable
+
+<PageTitle>@L["splash.title"]</PageTitle>
+<HeadContent>
+    <meta name="description" content="@L["splash.meta"]" />
+</HeadContent>
+
+<h1 class="bench-title">@L["splash.h1"]</h1>
+<p class="lede">@L["splash.lede"]</p>
+
+<div class="bench-block">
+    <div class="stage">
+        <canvas id="tank" class="render-canvas gl water"></canvas>
+        <div class="zoom-buttons">
+            <button type="button" @onclick="@(() => Dolly(0.8))" aria-label="+">+</button>
+            <button type="button" @onclick="@(() => Dolly(1.25))" aria-label="−">−</button>
+        </div>
+    </div>
+    <p class="bench-hint">@(gpu ? L["splash.hint"] : L["home.nogl"])</p>
+    <div class="readout compact">
+        <div><div class="value">@SiteInfo.Number(count, 0)</div><div class="label">@L["splash.r.particles"]</div></div>
+        <div><div class="value">@SiteInfo.Number(spacing * 1000, 0) mm</div><div class="label">@L["splash.r.spacing"]</div></div>
+        <div><div class="value">@SiteInfo.Number(liquid.ViscosityMPaS, liquid.ViscosityMPaS < 10 ? 2 : 0) mPa·s</div><div class="label">@L["home.r.visc"]</div></div>
+        <div><div class="value">@SiteInfo.Number(liquid.SurfaceTensionMNPerM, 1) mN/m</div><div class="label">@L["splash.r.tension"]</div></div>
+        <div><div class="value">@SiteInfo.Number(Weber, 0)</div><div class="label">@L["splash.r.weber"]</div></div>
+        <div><div class="value">@SiteInfo.Number(Ohnesorge, 4)</div><div class="label">@L["splash.r.ohnesorge"]</div></div>
+        <div><div class="value">@fps</div><div class="label">@L["home.r.fps"]</div></div>
+    </div>
+    <div class="bench-controls">
+        <label class="control">
+            <span>@L["home.liquid"]</span>
+            <select @bind="liquidName">
+                @foreach (Liquid l in Liquids.All)
+                {
+                    <option value="@l.Name">@LiquidNames.Of(L, l)</option>
+                }
+            </select>
+        </label>
+        <RangeField Label="@L["splash.drop.radius"]" @bind-Value="dropRadius" Min="0.005" Max="0.04" Step="0.001" Scale="1000" Unit="mm" Decimals="0" />
+        <RangeField Label="@L["splash.drop.speed"]" @bind-Value="dropSpeed" Min="0" Max="4" Step="0.1" Unit="m/s" Decimals="1" />
+        <RangeField Label="@L["splash.fill"]" @bind-Value="fill" Min="0" Max="0.15" Step="0.005" Scale="100" Unit="cm" Decimals="1" />
+        <label class="control">
+            <span>@L["splash.floor"]</span>
+            <select @bind="floor">
+                <option value="0">@L["home.floor.tiles"]</option>
+                <option value="1">@L["pour.table.stone"]</option>
+                <option value="2">@L["home.floor.dark"]</option>
+            </select>
+        </label>
+        <div class="control">
+            <div class="button-row">
+                <button type="button" @onclick="Drop">@L["splash.drop"]</button>
+                <button type="button" @onclick="Big">@L["splash.splash"]</button>
+                <button type="button" @onclick="Empty">@L["splash.empty"]</button>
+            </div>
+        </div>
+    </div>
+    <details class="more">
+        <summary>@L["ui.more"]</summary>
+        <div class="bench-controls">
+            <label class="control">
+                <span>@L["splash.spacing"]</span>
+                <select @bind="spacingChoice">
+                    <option value="0.006">6 mm</option>
+                    <option value="0.008">8 mm</option>
+                    <option value="0.01">10 mm</option>
+                </select>
+            </label>
+            <label class="control">
+                <span>@L["splash.budget"]</span>
+                <select @bind="side">
+                    <option value="64">4 096</option>
+                    <option value="128">16 384</option>
+                    <option value="256">65 536</option>
+                </select>
+            </label>
+            <RangeField Label="@L["splash.tank"]" @bind-Value="tank" Min="0.15" Max="0.6" Step="0.05" Scale="100" Unit="cm" Decimals="0" />
+            <RangeField Label="@L["splash.pour.rate"]" @bind-Value="pourRate" Min="50" Max="2000" Step="50" Unit="1/s" Decimals="0" />
+            <RangeField Label="@L["home.lamp.az"]" @bind-Value="lampAzimuth" Min="-180" Max="180" Step="1" Unit="°" />
+            <RangeField Label="@L["home.lamp.el"]" @bind-Value="lampElevation" Min="10" Max="89" Step="1" Unit="°" />
+            <RangeField Label="@L["home.exposure"]" @bind-Value="exposure" Min="0.25" Max="4" Step="0.05" Unit="×" />
+        </div>
+    </details>
+</div>
+
+<h2>@L["home.what.h"]</h2>
+<p>@H("splash.what.1")</p>
+<p>@H("splash.what.2")</p>
+<p>@H("splash.what.3")</p>
+<p>@H("splash.what.4")</p>
+
+@code {
+    private Liquid liquid = Liquids.Water;
+    private LiquidOptics optics = new(Liquids.Water);
+    private double dropRadiusValue = 0.02, dropSpeedValue = 1.5, fillValue = 0.06, tankValue = 0.3, pourRateValue = 400;
+    private double lampAzimuthValue = -29, lampElevationValue = 30, exposureValue = 1;
+    private double spacing = 0.008;
+    private int floorValue, sideValue = 128;
+    private bool gpu = true, rendered, pushQueued;
+    private int fps, count;
+    private System.Threading.Timer? pollTimer;
+
+    private string liquidName { get => liquid.Name; set { liquid = Liquids.Find(value) ?? Liquids.Water; optics = new LiquidOptics(liquid); Push(); } }
+    private double dropRadius { get => dropRadiusValue; set { dropRadiusValue = value; Push(); } }
+    private double dropSpeed { get => dropSpeedValue; set { dropSpeedValue = value; Push(); } }
+    private double fill { get => fillValue; set { fillValue = value; Push(); } }
+    private double tank { get => tankValue; set { tankValue = value; Push(); } }
+    private double pourRate { get => pourRateValue; set { pourRateValue = value; Push(); } }
+    private double lampAzimuth { get => lampAzimuthValue; set { lampAzimuthValue = value; Push(); } }
+    private double lampElevation { get => lampElevationValue; set { lampElevationValue = value; Push(); } }
+    private double exposure { get => exposureValue; set { exposureValue = value; Push(); } }
+    private int floor { get => floorValue; set { floorValue = value; Push(); } }
+    private int side { get => sideValue; set { sideValue = value; Push(); } }
+    private string spacingChoice { get => spacing.ToString(CultureInfo.InvariantCulture); set { spacing = double.Parse(value, CultureInfo.InvariantCulture); Push(); } }
+
+    // Weber number of the drop as it lands: inertia against surface tension; above a few tens it splashes rather than beads.
+    private double Weber => liquid.DensityKgPerM3 * dropSpeedValue * dropSpeedValue * 2 * dropRadiusValue / (liquid.SurfaceTensionMNPerM * 1e-3);
+
+    // Ohnesorge number: viscosity against inertia and tension; water near 0,002, glycerol near 3.
+    private double Ohnesorge => liquid.ViscosityMPaS * 1e-3 / Math.Sqrt(liquid.DensityKgPerM3 * liquid.SurfaceTensionMNPerM * 1e-3 * 2 * dropRadiusValue);
+
+    protected override void OnInitialized()
+    {
+        liquid = SiteInfo.ReadLiquidQuery(Navigation, Liquids.Water);
+        optics = new LiquidOptics(liquid);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            rendered = true;
+            await PushNowAsync();
+            pollTimer = new System.Threading.Timer(async _ => await PollAsync(), null, 500, 500);
+            return;
+        }
+
+        if (pushQueued)
+        {
+            pushQueued = false;
+            await PushNowAsync();
+        }
+    }
+
+    private void Push()
+    {
+        if (rendered)
+        {
+            pushQueued = true;
+        }
+    }
+
+    private async Task PushNowAsync()
+    {
+        var spec = new
+        {
+            ior = new[] { optics.IndexRgb.X, optics.IndexRgb.Y, optics.IndexRgb.Z },
+            alpha = new[] { optics.AbsorptionPerMetreRgb.X, optics.AbsorptionPerMetreRgb.Y, optics.AbsorptionPerMetreRgb.Z },
+            density = liquid.DensityKgPerM3,
+            kinematicViscosity = liquid.KinematicViscosity,
+            surfaceTension = liquid.SurfaceTensionMNPerM * 1e-3,
+            spacing,
+            side = sideValue,
+            box = new[] { tankValue, tankValue * 0.8, tankValue },
+            fill = fillValue,
+            dropRadius = dropRadiusValue,
+            dropSpeed = dropSpeedValue,
+            pourRate = pourRateValue,
+            pourSpeed = 1.0,
+            floor = floorValue,
+            lampAzimuth = lampAzimuthValue,
+            lampElevation = lampElevationValue,
+            lamp = 1.0,
+            exposure = exposureValue,
+        };
+        bool ok = await Js.InvokeAsync<bool>("undineParticles.render", "tank", spec);
+        if (!ok && gpu)
+        {
+            gpu = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task PollAsync()
+    {
+        try
+        {
+            int value = await Js.InvokeAsync<int>("undineParticles.fps", "tank");
+            int alive = await Js.InvokeAsync<int>("undineParticles.count", "tank");
+            if (value != fps || alive != count)
+            {
+                fps = value;
+                count = alive;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private Task Drop() => Js.InvokeVoidAsync("undineParticles.drop", "tank").AsTask();
+
+    private Task Big() => Js.InvokeVoidAsync("undineParticles.splash", "tank").AsTask();
+
+    private Task Empty() => Js.InvokeVoidAsync("undineParticles.empty", "tank").AsTask();
+
+    private Task Dolly(double factor) => Js.InvokeVoidAsync("undineParticles.dolly", "tank", factor).AsTask();
+
+    public void Dispose() => pollTimer?.Dispose();
+}
