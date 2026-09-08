@@ -27,6 +27,7 @@
         <div><div class="value">@SiteInfo.Number(liquid.ViscosityMPaS, liquid.ViscosityMPaS < 10 ? 2 : 0) mPa·s</div><div class="label">@L["home.r.visc"]</div></div>
         <div><div class="value">@SiteInfo.Number(Relax * 1000, Relax < 0.1 ? 1 : 0) ms</div><div class="label">@L["pour.r.relax"]</div></div>
         <div><div class="value">@SiteInfo.Number(Capillary * 1000, 2) mm</div><div class="label">@L["pour.r.capillary"]</div></div>
+        <div><div class="value">@SiteInfo.Number(Puddle * 1000, 1) mm</div><div class="label">@L["pour.r.puddle"]</div></div>
         <div><div class="value">@SiteInfo.Number(Reynolds, 0)</div><div class="label">@L["pour.r.reynolds"]</div></div>
         <div><div class="value">@SiteInfo.Number(optics.NormalReflectance * 100, 2)%</div><div class="label">@L["home.r.fresnel"]</div></div>
         <div><div class="value">@fps</div><div class="label">@L["home.r.fps"]</div></div>
@@ -44,6 +45,7 @@
         <RangeField Label="@L["pour.rate"]" @bind-Value="rate" Min="0.000005" Max="0.0003" Step="0.000005" Scale="1000000" Unit="ml/s" Decimals="0" />
         <RangeField Label="@L["pour.dish.depth"]" @bind-Value="dishDepth" Min="0" Max="0.05" Step="0.001" Scale="1000" Unit="mm" Decimals="0" />
         <RangeField Label="@L["pour.dish.radius"]" @bind-Value="dishRadius" Min="0.02" Max="0.2" Step="0.005" Scale="100" Unit="cm" Decimals="1" />
+        <RangeField Label="@L["pour.angle"]" @bind-Value="contactAngle" Min="2" Max="120" Step="1" Unit="°" Decimals="0" />
         <label class="control">
             <span>@L["pour.table"]</span>
             <select @bind="table">
@@ -100,7 +102,32 @@
     private double poured;
     private System.Threading.Timer? pollTimer;
 
-    private string liquidName { get => liquid.Name; set { liquid = Liquids.Find(value) ?? Liquids.Water; optics = new LiquidOptics(liquid); Push(); } }
+    private double contactAngleValue = ShallowFlow.DefaultContactAngle(Liquids.Water);
+    private bool angleTouched;
+
+    private string liquidName
+    {
+        get => liquid.Name;
+        set
+        {
+            liquid = Liquids.Find(value) ?? Liquids.Water;
+            optics = new LiquidOptics(liquid);
+            if (!angleTouched)
+            {
+                contactAngleValue = ShallowFlow.DefaultContactAngle(liquid);
+            }
+
+            Push();
+        }
+    }
+
+    private double contactAngle { get => contactAngleValue; set { contactAngleValue = value; angleTouched = true; Push(); } }
+
+    // What a puddle of this liquid settles to on the table: 2·l_c·sin(θ/2).
+    private double Puddle => 2 * Capillary * Math.Sin(contactAngleValue * Math.PI / 360);
+
+    // What the contact line holds a front with, per unit density: σ(1 − cos θ)/ρ.
+    private double Retention => liquid.SurfaceTensionMNPerM * 1e-3 / liquid.DensityKgPerM3 * (1 - Math.Cos(contactAngleValue * Math.PI / 180));
     private double rate { get => rateValue; set { rateValue = value; Push(); } }
     private double dishDepth { get => dishDepthValue; set { dishDepthValue = value; Push(); } }
     private double dishRadius { get => dishRadiusValue; set { dishRadiusValue = value; Push(); } }
@@ -127,6 +154,7 @@
     {
         liquid = SiteInfo.ReadLiquidQuery(Navigation, Liquids.Water);
         optics = new LiquidOptics(liquid);
+        contactAngleValue = ShallowFlow.DefaultContactAngle(liquid);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -176,6 +204,7 @@
             lampElevation = lampElevationValue,
             lamp = 1.0,
             exposure = exposureValue,
+            retention = Retention,
             // The fastest the liquid is allowed to run: what a fall from the spout's height gives, and a little more.
             speedCap = Math.Sqrt(2 * 9.80665 * spoutHeightValue) + 0.5,
         };

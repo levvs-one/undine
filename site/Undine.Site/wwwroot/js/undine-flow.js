@@ -154,6 +154,7 @@ void main() {
                 gl.uniform1f(u.uDt, sub);
                 gl.uniform1f(u.uViscosity, spec.kinematicViscosity);
                 gl.uniform1f(u.uSpeedCap, cap);
+                gl.uniform1f(u.uRetention, spec.retention);
                 if (spout) {
                     const radiusCells = Math.max(1, spec.spoutRadius / cellSize(spec));
                     const cellsUnder = Math.PI * radiusCells * radiusCells;

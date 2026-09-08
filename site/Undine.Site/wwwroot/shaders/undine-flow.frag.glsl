@@ -179,7 +179,7 @@ float march(vec3 o, vec3 d, float far) {
 }
 
 vec3 normalAt(vec2 xz) {
-    float e = uSide / float(textureSize(uState, 0).x);
+    float e = 1.5 * uSide / float(textureSize(uState, 0).x);
     float l = topAt(xz - vec2(e, 0.0)), r = topAt(xz + vec2(e, 0.0));
     float d = topAt(xz - vec2(0.0, e)), u = topAt(xz + vec2(0.0, e));
     return normalize(vec3(-(r - l) / (2.0 * e), 1.0, -(u - d) / (2.0 * e)));

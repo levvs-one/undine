@@ -54,7 +54,8 @@ public sealed class FlowTests
         double ritter = held + 2 * Math.Sqrt(G * h0) * t;
         foreach (Liquid liquid in Liquids.All)
         {
-            ShallowFlow flow = new(256, 0.256, liquid);
+            // Ritter's solution is for a wetted bed: no contact line to hold the tongue.
+            ShallowFlow flow = new(256, 0.256, liquid) { ContactAngleDegrees = 0 };
             for (int y = 0; y < 256; y++)
             {
                 for (int x = 0; x < 256; x++)
@@ -104,7 +105,8 @@ public sealed class FlowTests
         Liquid glycerol = Liquids.Glycerol;
         const double radius0 = 0.01, thickness0 = 0.032;
         double volume = Math.PI * radius0 * radius0 * thickness0;
-        ShallowFlow flow = new(128, 0.128, glycerol);
+        // Huppert's current spreads over a wetted floor: no contact line.
+        ShallowFlow flow = new(128, 0.128, glycerol) { ContactAngleDegrees = 0 };
         flow.Place(0.064, 0.064, radius0, thickness0);
         double placed = flow.Volume();
         double Radius()
@@ -146,6 +148,65 @@ public sealed class FlowTests
     }
 
     [TestMethod]
+    public void APuddleStopsAtItsOwnThicknessAndAWettingLiquidSpreadsToAFilm()
+    {
+        // Ten millilitres set down on a level table. Water beads: the puddle settles near 2·l_c·sin(θ/2), a few
+        // millimetres, and stops. Ethanol wets: it spreads far thinner. Every liquid is asked to stop, and to stop
+        // near its own thickness within the grid's ability to tell.
+        foreach (Liquid liquid in Liquids.All)
+        {
+            ShallowFlow flow = new(128, 0.256, liquid);
+            const double radius0 = 0.02, thickness0 = 0.008;
+            flow.Place(0.128, 0.128, radius0, thickness0);
+            double placed = flow.Volume();
+            flow.Step(3.0);
+            double wetArea = 0, before = flow.Volume();
+            for (int y = 0; y < 128; y++)
+            {
+                for (int x = 0; x < 128; x++)
+                {
+                    if (flow.ThicknessAt(x, y) > 1e-4)
+                    {
+                        wetArea += flow.CellMetres * flow.CellMetres;
+                    }
+                }
+            }
+
+            double mean = before / wetArea;
+            double puddle = flow.PuddleThickness;
+            string report = $"{liquid.Name}: mean thickness {mean * 1000:F2} mm over {wetArea * 1e4:F0} cm², puddle thickness {puddle * 1000:F2} mm, angle {flow.ContactAngleDegrees:F0}°";
+            Assert.AreEqual(placed, before, placed * 1e-4, $"{liquid.Name}: volume drifted");
+            if (puddle > 0.001)
+            {
+                // A beading liquid: the puddle is a puddle, between the receding rim's half and the advancing front's
+                // full thickness, and not thicker than it started.
+                Assert.IsTrue(mean > 0.5 * puddle && mean < Math.Min(thickness0, 1.3 * puddle), report);
+            }
+            else
+            {
+                // A wetting liquid: far thinner than any puddle water would make.
+                Assert.IsTrue(mean < 0.001, report);
+            }
+
+            // And it has stopped: another second changes the wet area by less than a few cells' worth.
+            flow.Step(1.0);
+            double wetAfter = 0;
+            for (int y = 0; y < 128; y++)
+            {
+                for (int x = 0; x < 128; x++)
+                {
+                    if (flow.ThicknessAt(x, y) > 1e-4)
+                    {
+                        wetAfter += flow.CellMetres * flow.CellMetres;
+                    }
+                }
+            }
+
+            Assert.IsTrue(Math.Abs(wetAfter - wetArea) < Math.Max(0.06 * wetArea, 8 * flow.CellMetres * flow.CellMetres), $"{liquid.Name}: still spreading, {wetArea * 1e4:F1} to {wetAfter * 1e4:F1} cm²");
+        }
+    }
+
+    [TestMethod]
     public void PouringFillsADishAndOverflowsIt()
     {
         foreach (Liquid liquid in Liquids.All)
@@ -159,8 +220,9 @@ public sealed class FlowTests
             Assert.AreEqual(rate * 1.0, flow.Volume(), rate * 0.01, $"{liquid.Name}: poured volume");
             Assert.IsTrue(flow.ThicknessAt(48, 48) > 0.004, $"{liquid.Name}: the dish should be filling, has {flow.ThicknessAt(48, 48):F4} m");
             flow.Step(4.0);
-            // A hundred millilitres into a dish that holds about nineteen: the table around it is wet.
-            bool overflow = flow.ThicknessAt(48, 20) > 1e-4 || flow.ThicknessAt(48, 76) > 1e-4;
+            // A hundred millilitres into a dish that holds about nineteen: the table two centimetres out from the
+            // rim is wet (glycerol's overflow creeps, and its puddle is held at its thickness, so it is the slowest).
+            bool overflow = flow.ThicknessAt(48, 28) > 1e-4 || flow.ThicknessAt(48, 68) > 1e-4;
             Assert.IsTrue(overflow, $"{liquid.Name}: no overflow after 5 s");
         }
     }
