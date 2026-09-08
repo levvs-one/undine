@@ -21,7 +21,7 @@
             <button type="button" @onclick="@(() => Dolly(1.25))" aria-label="−">−</button>
         </div>
     </div>
-    <p class="bench-hint">@(gpu ? L["pour.hint"] : L["home.nogl"])</p>
+    <p class="bench-hint">@(error.Length > 0 ? error : gpu ? L["pour.hint"] : L["home.nogl"])</p>
     <div class="readout compact">
         <div><div class="value">@SiteInfo.Number(poured * 1e6, 0) ml</div><div class="label">@L["pour.r.poured"]</div></div>
         <div><div class="value">@SiteInfo.Number(liquid.ViscosityMPaS, liquid.ViscosityMPaS < 10 ? 2 : 0) mPa·s</div><div class="label">@L["home.r.visc"]</div></div>
@@ -96,6 +96,7 @@
     private int tableValue, cellsValue = 256;
     private bool gpu = true, rendered, pushQueued;
     private int fps;
+    private string error = "";
     private double poured;
     private System.Threading.Timer? pollTimer;
 
@@ -192,10 +193,12 @@
         {
             int value = await Js.InvokeAsync<int>("undineFlow.fps", "table");
             double volume = await Js.InvokeAsync<double>("undineFlow.poured", "table");
-            if (value != fps || Math.Abs(volume - poured) > 1e-7)
+            string failure = await Js.InvokeAsync<string>("undineFlow.error", "table");
+            if (value != fps || Math.Abs(volume - poured) > 1e-7 || failure != error)
             {
                 fps = value;
                 poured = volume;
+                error = failure;
                 await InvokeAsync(StateHasChanged);
             }
         }

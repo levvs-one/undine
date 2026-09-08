@@ -21,7 +21,7 @@
             <button type="button" @onclick="@(() => Dolly(1.25))" aria-label="−">−</button>
         </div>
     </div>
-    <p class="bench-hint">@(gpu ? L["home.hint.touch"] : L["home.nogl"])</p>
+    <p class="bench-hint">@(error.Length > 0 ? error : gpu ? L["home.hint.touch"] : L["home.nogl"])</p>
     <div class="readout compact">
         <div><div class="value">@SiteInfo.Number(WaveSpeed, 2) m/s</div><div class="label">@L["home.r.speed"]</div></div>
         <div><div class="value">@SiteInfo.Number(Liquid.ShallowWaveSpeed(depth), 2) m/s</div><div class="label">@L["home.r.ripple"]</div></div>
@@ -95,6 +95,7 @@
     private int floorValue, cellsValue = 256;
     private bool gpu = true, rendered, pushQueued;
     private int fps;
+    private string error = "";
     private System.Threading.Timer? fpsTimer;
 
     private string liquidName { get => liquid.Name; set { liquid = Liquids.Find(value) ?? Liquids.Water; optics = new LiquidOptics(liquid); Push(); } }
@@ -193,9 +194,11 @@
         try
         {
             int value = await Js.InvokeAsync<int>("undineWater.fps", "water");
-            if (value != fps)
+            string failure = await Js.InvokeAsync<string>("undineWater.error", "water");
+            if (value != fps || failure != error)
             {
                 fps = value;
+                error = failure;
                 await InvokeAsync(StateHasChanged);
             }
         }

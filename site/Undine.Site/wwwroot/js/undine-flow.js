@@ -27,6 +27,7 @@ void main() {
     const TAN_HALF = Math.tan(38 * Math.PI / 360);
     const G = 9.80665;
     const views = new Map();
+    const setupErrors = new Map();
     let sources = null;
 
     async function loadSources() {
@@ -94,6 +95,8 @@ void main() {
             lastTime: 0, frame: 0, fallback: 0, frames: 0, fpsTime: 0, fps: 0, poured: 0, pouring: 0,
         };
         attach(view);
+        canvas.addEventListener("webglcontextlost", e => { e.preventDefault(); view.error = "WebGL context lost: the browser's GPU process reset it; reload the page"; });
+        canvas.addEventListener("webglcontextrestored", () => { view.error = ""; view.a = null; schedule(view); });
         return view;
     }
 
@@ -257,9 +260,21 @@ void main() {
         if (!view.spec || !document.body.contains(view.canvas)) return;
         const seconds = view.lastTime ? Math.min(0.05, (time - view.lastTime) / 1000) : 1 / 60;
         view.lastTime = time;
-        surfaces(view);
-        stepFlow(view, seconds);
-        draw(view);
+        try {
+            if (view.gl.isContextLost()) throw new Error("WebGL context lost: the browser's GPU process reset it; reload the page, or restart the browser if it stays black");
+            surfaces(view);
+            stepFlow(view, seconds);
+            draw(view);
+            if (view.frames < 3) {
+                const err = view.gl.getError();
+                if (err !== view.gl.NO_ERROR) view.error = "WebGL error " + err + " in the first frames";
+            }
+        } catch (error) {
+            view.error = String(error && error.message || error);
+            console.error("undine flow:", error);
+            view.frame = 0;
+            return;
+        }
         view.frames++;
         if (time - view.fpsTime > 1000) {
             view.fps = view.frames;
@@ -351,9 +366,10 @@ void main() {
                     view = await setup(canvas);
                 } catch (error) {
                     console.error("undine: shader failed to build", error);
+                    setupErrors.set(canvas, String(error && error.message || error));
                     return false;
                 }
-                if (!view) return false;
+                if (!view) { setupErrors.set(canvas, "WebGL2 with float render targets (EXT_color_buffer_float) is not available in this browser"); return false; }
                 views.set(canvas, view);
             }
             view.spec = spec;
@@ -384,6 +400,11 @@ void main() {
         fps(id) {
             const view = views.get(document.getElementById(id));
             return view ? view.fps : 0;
+        },
+        error(id) {
+            const canvas = document.getElementById(id);
+            const view = views.get(canvas);
+            return view && view.error ? view.error : setupErrors.get(canvas) || "";
         },
         // One frame rendered now at a fixed size after a spell of simulation, as a PNG data URL, for checking without a screen.
         snapshot(id, width, height, seconds, pourSeconds) {

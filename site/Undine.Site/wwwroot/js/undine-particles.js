@@ -172,7 +172,8 @@ void main() {
             lastTime: 0, frame: 0, fallback: 0, frames: 0, fpsTime: 0, fps: 0,
         };
         attach(view);
-        canvas.addEventListener("webglcontextlost", e => { e.preventDefault(); view.error = "WebGL context lost: the driver reset it"; });
+        canvas.addEventListener("webglcontextlost", e => { e.preventDefault(); view.error = "WebGL context lost: the browser's GPU process reset it; reload the page, or restart the browser if it stays black"; });
+        canvas.addEventListener("webglcontextrestored", () => { view.error = ""; view.states = null; view.screen = null; schedule(view); });
         return view;
     }
 

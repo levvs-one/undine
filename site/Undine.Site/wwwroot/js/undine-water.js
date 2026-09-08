@@ -43,6 +43,7 @@ void main() {
     // The deck stands this far above the water at rest, so the walls show dry above the waterline.
     const RIM = 0.12;
     const views = new Map();
+    const setupErrors = new Map();
     let sources = null;
 
     async function loadSources() {
@@ -120,6 +121,8 @@ void main() {
             frame: 0, fallback: 0, frames: 0, fpsTime: 0, fps: 0, gust: 1, gustClock: 0,
         };
         attach(view);
+        canvas.addEventListener("webglcontextlost", e => { e.preventDefault(); view.error = "WebGL context lost: the browser's GPU process reset it; reload the page"; });
+        canvas.addEventListener("webglcontextrestored", () => { view.error = ""; view.a = null; view.causticMap = null; schedule(view); });
         return view;
     }
 
@@ -336,11 +339,23 @@ void main() {
         if (!view.spec || !document.body.contains(view.canvas)) return;
         const seconds = view.lastTime ? Math.min(0.05, (time - view.lastTime) / 1000) : 1 / 60;
         view.lastTime = time;
-        surfaces(view);
-        gustEnvelope(view, seconds);
-        stepSurface(view, seconds);
-        const norm = buildCaustics(view);
-        draw(view, norm);
+        try {
+            if (view.gl.isContextLost()) throw new Error("WebGL context lost: the browser's GPU process reset it; reload the page, or restart the browser if it stays black");
+            surfaces(view);
+            gustEnvelope(view, seconds);
+            stepSurface(view, seconds);
+            const norm = buildCaustics(view);
+            draw(view, norm);
+            if (view.frames < 3) {
+                const err = view.gl.getError();
+                if (err !== view.gl.NO_ERROR) view.error = "WebGL error " + err + " in the first frames";
+            }
+        } catch (error) {
+            view.error = String(error && error.message || error);
+            console.error("undine water:", error);
+            view.frame = 0;
+            return;
+        }
         view.frames++;
         if (time - view.fpsTime > 1000) {
             view.fps = view.frames;
@@ -434,9 +449,10 @@ void main() {
                     view = await setup(canvas);
                 } catch (error) {
                     console.error("undine: shader failed to build", error);
+                    setupErrors.set(canvas, String(error && error.message || error));
                     return false;
                 }
-                if (!view) return false;
+                if (!view) { setupErrors.set(canvas, "WebGL2 with float render targets (EXT_color_buffer_float) is not available in this browser"); return false; }
                 views.set(canvas, view);
                 // Three drops at the start so the water is never still.
                 for (const delay of [300, 900, 1700]) setTimeout(() => this.drop(id), delay);
@@ -464,6 +480,11 @@ void main() {
         fps(id) {
             const view = views.get(document.getElementById(id));
             return view ? view.fps : 0;
+        },
+        error(id) {
+            const canvas = document.getElementById(id);
+            const view = views.get(canvas);
+            return view && view.error ? view.error : setupErrors.get(canvas) || "";
         },
         // One frame rendered now and returned as a PNG data URL; for checking the picture without a screen.
         snapshot(id, width, height, seconds) {
