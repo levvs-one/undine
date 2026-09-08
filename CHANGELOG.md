@@ -14,5 +14,11 @@
   the deck stands above the waterline so the walls show dry, wet and refracted; the reflection meets the pool's own
   walls; caustics are Gaussian splats over a map that reaches past the floor and light the walls too; the lining is
   filtered against distance; the camera looks from the deck. `Surface` takes an optional wavelength and damping.
+- Pouring: `ShallowFlow`, the shallow-water equations over a floor with a no-slip bottom (drag 3νu/h²) that blends
+  into Huppert's thin-film flux when the drag relaxes the film within a step; HLL flux, hydrostatic reconstruction,
+  walls, a spout. Tests for every liquid: a still puddle on an uneven floor stays still and keeps its volume, a
+  released sheet runs at Ritter's front speed when free and creeps when viscous, glycerol spreads as Huppert's
+  R ∝ t^(1/8), pouring fills a dish and overflows it. The site's Pour page runs the same scheme on the GPU.
+- The pool's camera turns with the right button or two fingers; the Orbit switch is gone.
 - `LiquidOptics` treats an extinction table that stops short of the visible as no data instead of clamping to its
   edge (glycerol's infrared-only table had made the liquid black).

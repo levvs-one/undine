@@ -21,7 +21,7 @@
             <button type="button" @onclick="@(() => Dolly(1.25))" aria-label="−">−</button>
         </div>
     </div>
-    <p class="bench-hint">@(gpu ? (orbit ? L["home.hint.orbit"] : L["home.hint.touch"]) : L["home.nogl"])</p>
+    <p class="bench-hint">@(gpu ? L["home.hint.touch"] : L["home.nogl"])</p>
     <div class="readout compact">
         <div><div class="value">@SiteInfo.Number(WaveSpeed, 2) m/s</div><div class="label">@L["home.r.speed"]</div></div>
         <div><div class="value">@SiteInfo.Number(Liquid.ShallowWaveSpeed(depth), 2) m/s</div><div class="label">@L["home.r.ripple"]</div></div>
@@ -53,7 +53,6 @@
             </select>
         </label>
         <div class="control">
-            <label class="check"><input type="checkbox" @bind="orbit" /> @L["home.orbit"]</label>
             <div class="button-row">
                 <button type="button" @onclick="Drop">@L["home.drop"]</button>
                 <button type="button" @onclick="Calm">@L["home.calm"]</button>
@@ -94,7 +93,7 @@
     private LiquidOptics optics = new(Liquids.Water);
     private double depthValue = 1.2, sideValue = 4, lampAzimuthValue = 35, lampElevationValue = 55, lampValue = 1, exposureValue = 1, touchValue = 0.02, touchRadiusValue = 0.07, dampingValue = 0.35, windValue = 0.25;
     private int floorValue, cellsValue = 256;
-    private bool orbitValue, gpu = true, rendered, pushQueued;
+    private bool gpu = true, rendered, pushQueued;
     private int fps;
     private System.Threading.Timer? fpsTimer;
 
@@ -111,7 +110,6 @@
     private double wind { get => windValue; set { windValue = value; Push(); } }
     private int floor { get => floorValue; set { floorValue = value; Push(); } }
     private int cells { get => cellsValue; set { cellsValue = value; Push(); } }
-    private bool orbit { get => orbitValue; set { orbitValue = value; _ = Js.InvokeVoidAsync("undineWater.orbit", "water", value); } }
 
     // The wavelength a touch makes: a dent of one radius is half a wavelength. The field runs every wavelength at
     // its own speed; this one is what the readout quotes.

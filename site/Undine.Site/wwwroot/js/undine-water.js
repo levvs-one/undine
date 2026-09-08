@@ -352,23 +352,27 @@ void main() {
 
     function attach(view) {
         const c = view.canvas;
+        c.addEventListener("contextmenu", e => e.preventDefault());
         c.addEventListener("pointerdown", e => {
-            if (e.button !== 0 || !view.spec) return;
+            if (!view.spec) return;
             c.setPointerCapture(e.pointerId);
             view.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
             if (view.pointers.size === 2) {
+                // Two fingers: turn the camera and pinch to come closer.
                 view.touch = null;
-                view.dragging = false;
                 const p = [...view.pointers.values()];
                 view.pinch = Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);
+                view.dragging = true;
+                view.lastX = (p[0].x + p[1].x) / 2;
+                view.lastY = (p[0].y + p[1].y) / 2;
                 return;
             }
             const rect = c.getBoundingClientRect();
-            if (view.orbit) {
+            if (e.button === 2 || e.button === 1) {
                 view.dragging = true;
                 view.lastX = e.clientX;
                 view.lastY = e.clientY;
-            } else {
+            } else if (e.button === 0) {
                 view.touch = surfaceCell(view, e.clientX - rect.left, e.clientY - rect.top);
             }
         });
@@ -382,6 +386,11 @@ void main() {
                     view.distance = Math.min(16, Math.max(2, view.distance * view.pinch / d));
                     view.pinch = d;
                 }
+                const mx = (p[0].x + p[1].x) / 2, my = (p[0].y + p[1].y) / 2;
+                view.yaw -= (mx - view.lastX) * 0.008;
+                view.pitch = Math.min(1.5, Math.max(0.08, view.pitch + (my - view.lastY) * 0.008));
+                view.lastX = mx;
+                view.lastY = my;
                 return;
             }
             const rect = c.getBoundingClientRect();
@@ -447,10 +456,6 @@ void main() {
         calm(id) {
             const view = views.get(document.getElementById(id));
             if (view) view.a = null;
-        },
-        orbit(id, on) {
-            const view = views.get(document.getElementById(id));
-            if (view) view.orbit = !!on;
         },
         dolly(id, factor) {
             const view = views.get(document.getElementById(id));
