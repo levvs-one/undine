@@ -21,7 +21,7 @@
             <button type="button" @onclick="@(() => Dolly(1.25))" aria-label="−">−</button>
         </div>
     </div>
-    <p class="bench-hint">@(gpu ? L["splash.hint"] : L["home.nogl"])</p>
+    <p class="bench-hint">@(error.Length > 0 ? error : gpu ? L["splash.hint"] : L["home.nogl"])</p>
     <div class="readout compact">
         <div><div class="value">@SiteInfo.Number(count, 0)</div><div class="label">@L["splash.r.particles"]</div></div>
         <div><div class="value">@SiteInfo.Number(spacing * 1000, 0) mm</div><div class="label">@L["splash.r.spacing"]</div></div>
@@ -99,10 +99,11 @@
     private LiquidOptics optics = new(Liquids.Water);
     private double dropRadiusValue = 0.02, dropSpeedValue = 1.5, fillValue = 0.06, tankValue = 0.3, pourRateValue = 400;
     private double lampAzimuthValue = -29, lampElevationValue = 30, exposureValue = 1;
-    private double spacing = 0.008;
-    private int floorValue, sideValue = 128;
+    private double spacing = 0.01;
+    private int floorValue, sideValue = 64;
     private bool gpu = true, rendered, pushQueued;
     private int fps, count;
+    private string error = "";
     private System.Threading.Timer? pollTimer;
 
     private string liquidName { get => liquid.Name; set { liquid = Liquids.Find(value) ?? Liquids.Water; optics = new LiquidOptics(liquid); Push(); } }
@@ -192,10 +193,12 @@
         {
             int value = await Js.InvokeAsync<int>("undineParticles.fps", "tank");
             int alive = await Js.InvokeAsync<int>("undineParticles.count", "tank");
-            if (value != fps || alive != count)
+            string failure = await Js.InvokeAsync<string>("undineParticles.error", "tank");
+            if (value != fps || alive != count || failure != error)
             {
                 fps = value;
                 count = alive;
+                error = failure;
                 await InvokeAsync(StateHasChanged);
             }
         }

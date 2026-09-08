@@ -11,6 +11,7 @@ void main() {
     const G = 9.80665;
     const TAN_HALF = Math.tan(36 * Math.PI / 360);
     const views = new Map();
+    const setupErrors = new Map();
     let sources = null;
 
     // The shader files hold named sections after a shared prelude.
@@ -43,12 +44,16 @@ void main() {
         return shader;
     }
 
-    function link(gl, vertex, fragment) {
+    function link(gl, vertex, fragment, name) {
         const program = gl.createProgram();
-        gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, vertex));
-        gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, fragment));
+        try {
+            gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, vertex));
+            gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, fragment));
+        } catch (error) {
+            throw new Error("shader " + name + ": " + error.message);
+        }
         gl.linkProgram(program);
-        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error("program " + name + ": " + gl.getProgramInfoLog(program));
         const u = {};
         const count = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
         for (let i = 0; i < count; i++) {
@@ -148,26 +153,37 @@ void main() {
         const P = src.sim.prelude, R = src.render.prelude;
         const view = {
             canvas, gl,
-            forces: link(gl, VERTEX, P + src.sim.forces),
-            keys: link(gl, VERTEX, P + src.sim.keys),
-            sort: link(gl, VERTEX, P + src.sim.sort),
-            reorder: link(gl, VERTEX, P + src.sim.reorder),
-            cells: link(gl, P + src.sim.cellsVertex, P + src.sim.cellsFragment),
-            lambda: link(gl, VERTEX, P + src.sim.lambda),
-            delta: link(gl, VERTEX, P + src.sim.delta),
-            finish: link(gl, VERTEX, P + src.sim.finish),
-            background: link(gl, VERTEX, R + src.render.background),
-            sphereDepth: link(gl, R + src.render.sphereVertex, R + src.render.sphereDepth),
-            sphereThickness: link(gl, R + src.render.sphereVertex, R + src.render.sphereThickness),
-            smooth: link(gl, VERTEX, R + src.render.smooth),
-            compose: link(gl, VERTEX, R + src.render.compose),
+            forces: link(gl, VERTEX, P + src.sim.forces, "forces"),
+            keys: link(gl, VERTEX, P + src.sim.keys, "keys"),
+            sort: link(gl, VERTEX, P + src.sim.sort, "sort"),
+            reorder: link(gl, VERTEX, P + src.sim.reorder, "reorder"),
+            cells: link(gl, P + src.sim.cellsVertex, P + src.sim.cellsFragment, "cells"),
+            lambda: link(gl, VERTEX, P + src.sim.lambda, "lambda"),
+            delta: link(gl, VERTEX, P + src.sim.delta, "delta"),
+            finish: link(gl, VERTEX, P + src.sim.finish, "finish"),
+            background: link(gl, VERTEX, R + src.render.background, "background"),
+            sphereDepth: link(gl, R + src.render.sphereVertex, R + src.render.sphereDepth, "sphere depth"),
+            sphereThickness: link(gl, R + src.render.sphereVertex, R + src.render.sphereThickness, "sphere thickness"),
+            smooth: link(gl, VERTEX, R + src.render.smooth, "smooth"),
+            compose: link(gl, VERTEX, R + src.render.compose, "compose"),
             spec: null, key: "", side: 0, alive: 0, k: null,
             yaw: 0.6, pitch: 0.35, distance: 0.75,
             pointers: new Map(), pinch: 0, dragging: false, lastX: 0, lastY: 0, pouring: null, pourClock: 0,
             lastTime: 0, frame: 0, fallback: 0, frames: 0, fpsTime: 0, fps: 0,
         };
         attach(view);
+        canvas.addEventListener("webglcontextlost", e => { e.preventDefault(); view.error = "WebGL context lost: the driver reset it"; });
         return view;
+    }
+
+    // In the first frames every stage is checked for a GL error, and the first one found is named on the page.
+    function check(view, stage) {
+        if (view.checked > 3 || view.error) return;
+        const err = view.gl.getError();
+        if (err !== view.gl.NO_ERROR) {
+            const why = err === 1286 ? " (framebuffer incomplete)" : err === 1282 ? " (invalid operation)" : err === 1281 ? " (invalid value)" : "";
+            view.error = "stage " + stage + ": WebGL error " + err + why;
+        }
     }
 
     function pass(gl, program, target, width, height, setUniforms, textures) {
@@ -299,6 +315,7 @@ void main() {
         // first sort the cell table is empty and the forces are gravity alone.
         pass(gl, view.forces, view.velPred, n, n, u => { setCommon(view, u); gl.uniform1f(u.uDt, dt); },
             { uPos: state.textures[0], uVel: state.textures[1], uLambda: view.lambdaTex.texture, ...grid });
+        check(view, "forces");
         const newVel = view.velPred.textures[0], newPred = view.velPred.textures[1];
         // Keys, then the bitonic sort.
         pass(gl, view.keys, view.keysA, n, n, u => setCommon(view, u), { uPred: newPred });
@@ -310,6 +327,7 @@ void main() {
             }
         }
         view.keysA = a; view.keysB = b;
+        check(view, "sort");
         const sortedKeys = a.texture;
         // The arrays in sorted order, and the cell table.
         pass(gl, view.reorder, view.sorted, n, n, u => setCommon(view, u), { uKeys: sortedKeys, uPos: state.textures[0], uVel: newVel, uPred: newPred });
@@ -326,6 +344,7 @@ void main() {
             gl.uniform1i(view.cells.u.uWhich, which);
             gl.drawArrays(gl.POINTS, 0, total);
         }
+        check(view, "cells");
         const [sortedPos, , sortedPred] = view.sorted.textures;
         // The density constraint: four rounds of multipliers and corrections, the predictions ping-ponging.
         let pred = sortedPred;
@@ -335,10 +354,12 @@ void main() {
             pass(gl, view.delta, target, n, n, u => setCommon(view, u), { uPred: pred, uLambda: view.lambdaTex.texture, ...grid });
             pred = target.texture;
         }
+        check(view, "constraint");
         // The velocity from the move, smoothed; the position becomes the predicted one; the other state takes over.
         const next = view.states[1 - view.current];
         pass(gl, view.finish, next, n, n, u => { setCommon(view, u); gl.uniform1f(u.uDt, dt); }, { uPred: pred, uPos: sortedPos, uLambda: view.lambdaTex.texture, ...grid });
         view.current = 1 - view.current;
+        check(view, "finish");
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
 
@@ -499,6 +520,8 @@ void main() {
             [from, to] = [to, from];
         }
         pass(gl, view.compose, null, w, h, common, { uDepth: from.texture, uThickness: s.thickness.texture, uBackground: s.background.texture });
+        check(view, "draw");
+        view.checked = (view.checked || 0) + 1;
     }
 
     function schedule(view) {
@@ -518,9 +541,20 @@ void main() {
         if (!view.spec || !document.body.contains(view.canvas)) return;
         const seconds = view.lastTime ? Math.min(0.033, (time - view.lastTime) / 1000) : 1 / 60;
         view.lastTime = time;
-        surfaces(view);
-        step(view, seconds);
-        draw(view);
+        try {
+            if (view.gl.isContextLost()) throw new Error("WebGL context lost: the driver reset it, which happens when a pass takes too long on this GPU");
+            surfaces(view);
+            step(view, seconds);
+            draw(view);
+            const err = view.gl.getError();
+            if (err !== view.gl.NO_ERROR && !view.error) view.error = "WebGL error " + err;
+        } catch (error) {
+            // Whatever went wrong is shown on the page rather than swallowed in a black canvas.
+            view.error = String(error && error.message || error);
+            console.error("undine particles:", error);
+            view.frame = 0;
+            return;
+        }
         view.frames++;
         if (time - view.fpsTime > 1000) { view.fps = view.frames; view.frames = 0; view.fpsTime = time; }
         schedule(view);
@@ -615,8 +649,12 @@ void main() {
             if (!canvas) return false;
             let view = views.get(canvas);
             if (!view) {
-                try { view = await setup(canvas); } catch (error) { console.error("undine: shader failed to build", error); return false; }
-                if (!view) return false;
+                try { view = await setup(canvas); } catch (error) {
+                    console.error("undine: shader failed to build", error);
+                    setupErrors.set(canvas, String(error && error.message || error));
+                    return false;
+                }
+                if (!view) { setupErrors.set(canvas, "WebGL2 with float render targets (EXT_color_buffer_float) is not available"); return false; }
                 views.set(canvas, view);
             }
             view.spec = spec;
@@ -650,6 +688,11 @@ void main() {
         fps(id) {
             const view = views.get(document.getElementById(id));
             return view ? view.fps : 0;
+        },
+        error(id) {
+            const canvas = document.getElementById(id);
+            const view = views.get(canvas);
+            return view && view.error ? view.error : setupErrors.get(canvas) || "";
         },
         // Positions and velocities read back: count, mean and highest height, RMS speed. For checking against the package.
         stats(id) {
