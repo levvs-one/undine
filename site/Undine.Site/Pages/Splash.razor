@@ -21,8 +21,9 @@
             <button type="button" @onclick="@(() => Dolly(1.25))" aria-label="−">−</button>
         </div>
     </div>
-    <p class="bench-hint">@(error.Length > 0 ? error : gpu ? L["splash.hint"] : L["home.nogl"])</p>
+    <p class="bench-hint">@(error.Length > 0 ? error : missingLayers > 0 ? T("splash.short", SiteInfo.Number(missingLayers, 0)) : gpu ? L["splash.hint"] : L["home.nogl"])</p>
     <div class="readout compact">
+        <div><div class="value">@SiteInfo.Number(litres, litres < 1 ? 3 : 2) l</div><div class="label">@L["splash.r.litres"]</div></div>
         <div><div class="value">@SiteInfo.Number(count, 0)</div><div class="label">@L["splash.r.particles"]</div></div>
         <div><div class="value">@SiteInfo.Number(spacing * 1000, 0) mm</div><div class="label">@L["splash.r.spacing"]</div></div>
         <div><div class="value">@SiteInfo.Number(liquid.ViscosityMPaS, liquid.ViscosityMPaS < 10 ? 2 : 0) mPa·s</div><div class="label">@L["home.r.visc"]</div></div>
@@ -80,7 +81,17 @@
                 </select>
             </label>
             <RangeField Label="@L["splash.tank"]" @bind-Value="tank" Min="0.15" Max="0.6" Step="0.05" Scale="100" Unit="cm" Decimals="0" />
-            <RangeField Label="@L["splash.pour.rate"]" @bind-Value="pourRate" Min="50" Max="2000" Step="50" Unit="1/s" Decimals="0" />
+            <RangeField Label="@L["splash.stream.radius"]" @bind-Value="streamRadius" Min="0.005" Max="0.03" Step="0.001" Scale="1000" Unit="mm" Decimals="0" />
+            <RangeField Label="@L["splash.stream.speed"]" @bind-Value="pourSpeed" Min="0.2" Max="3" Step="0.1" Unit="m/s" Decimals="1" />
+            <label class="control">
+                <span>@L["splash.iterations"]</span>
+                <select @bind="iterations">
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                    <option value="6">6</option>
+                </select>
+            </label>
             <RangeField Label="@L["home.lamp.az"]" @bind-Value="lampAzimuth" Min="-180" Max="180" Step="1" Unit="°" />
             <RangeField Label="@L["home.lamp.el"]" @bind-Value="lampElevation" Min="10" Max="89" Step="1" Unit="°" />
             <RangeField Label="@L["home.exposure"]" @bind-Value="exposure" Min="0.25" Max="4" Step="0.05" Unit="×" />
@@ -97,12 +108,14 @@
 @code {
     private Liquid liquid = Liquids.Water;
     private LiquidOptics optics = new(Liquids.Water);
-    private double dropRadiusValue = 0.02, dropSpeedValue = 1.5, fillValue = 0.06, tankValue = 0.3, pourRateValue = 400;
+    private double dropRadiusValue = 0.02, dropSpeedValue = 1.5, fillValue = 0.06, tankValue = 0.3, streamRadiusValue = 0.012, pourSpeedValue = 1.0;
+    private int iterationsValue = 3;
     private double lampAzimuthValue = -29, lampElevationValue = 30, exposureValue = 1;
     private double spacing = 0.01;
-    private int floorValue, sideValue = 64;
+    private int floorValue, sideValue = 128;
     private bool gpu = true, rendered, pushQueued;
-    private int fps, count;
+    private int fps, count, missingLayers;
+    private double litres;
     private string error = "";
     private System.Threading.Timer? pollTimer;
 
@@ -111,7 +124,9 @@
     private double dropSpeed { get => dropSpeedValue; set { dropSpeedValue = value; Push(); } }
     private double fill { get => fillValue; set { fillValue = value; Push(); } }
     private double tank { get => tankValue; set { tankValue = value; Push(); } }
-    private double pourRate { get => pourRateValue; set { pourRateValue = value; Push(); } }
+    private double streamRadius { get => streamRadiusValue; set { streamRadiusValue = value; Push(); } }
+    private double pourSpeed { get => pourSpeedValue; set { pourSpeedValue = value; Push(); } }
+    private int iterations { get => iterationsValue; set { iterationsValue = value; Push(); } }
     private double lampAzimuth { get => lampAzimuthValue; set { lampAzimuthValue = value; Push(); } }
     private double lampElevation { get => lampElevationValue; set { lampElevationValue = value; Push(); } }
     private double exposure { get => exposureValue; set { exposureValue = value; Push(); } }
@@ -171,8 +186,11 @@
             fill = fillValue,
             dropRadius = dropRadiusValue,
             dropSpeed = dropSpeedValue,
-            pourRate = pourRateValue,
-            pourSpeed = 1.0,
+            streamRadius = streamRadiusValue,
+            pourSpeed = pourSpeedValue,
+            iterations = iterationsValue,
+            // A safety on speed, well above anything a drop from this tank's height reaches.
+            speedCap = Math.Sqrt(2 * 9.80665 * tankValue * 0.8) * 2 + dropSpeedValue + 2,
             floor = floorValue,
             lampAzimuth = lampAzimuthValue,
             lampElevation = lampElevationValue,
@@ -194,11 +212,14 @@
             int value = await Js.InvokeAsync<int>("undineParticles.fps", "tank");
             int alive = await Js.InvokeAsync<int>("undineParticles.count", "tank");
             string failure = await Js.InvokeAsync<string>("undineParticles.error", "tank");
-            if (value != fps || alive != count || failure != error)
+            double[] volume = await Js.InvokeAsync<double[]>("undineParticles.volume", "tank");
+            if (value != fps || alive != count || failure != error || Math.Abs(volume[0] - litres) > 1e-6 || (int)volume[1] != missingLayers)
             {
                 fps = value;
                 count = alive;
                 error = failure;
+                litres = volume[0];
+                missingLayers = (int)volume[1];
                 await InvokeAsync(StateHasChanged);
             }
         }

@@ -208,23 +208,26 @@ uniform sampler2D uBackground;
 uniform vec3 uForward, uRight, uUp;
 uniform float uTanHalf;
 uniform mat4 uInverseView;
-uniform int uDebug;            // 1 normals, 2 thickness, 3 depth, 4 refraction shift
+uniform vec2 uFluidResolution; // the depth and thickness images' size
+uniform int uDebug;            // 1 normals, 2 thickness, 3 depth
 out vec4 outColour;
 
 vec3 eyeAt(ivec2 t) {
     float d = texelFetch(uDepth, t, 0).r;
-    vec2 ndc = (vec2(t) + 0.5) / uResolution * 2.0 - 1.0;
-    float aspect = uResolution.x / uResolution.y;
+    vec2 ndc = (vec2(t) + 0.5) / uFluidResolution * 2.0 - 1.0;
+    float aspect = uFluidResolution.x / uFluidResolution.y;
     return vec3(ndc.x * uTanHalf * aspect * d, ndc.y * uTanHalf * d, -d);
 }
 
 void main() {
-    ivec2 t = ivec2(gl_FragCoord.xy);
-    vec4 back = texelFetch(uBackground, t, 0);
+    ivec2 tf = ivec2(gl_FragCoord.xy);
+    vec4 back = texelFetch(uBackground, tf, 0);
+    // The fluid images are smaller than the screen: the matching texel.
+    ivec2 t = ivec2(gl_FragCoord.xy * uFluidResolution / uResolution);
     float depth = texelFetch(uDepth, t, 0).r;
     if (depth <= 0.0 || depth > back.a) { outColour = vec4(compand(tonemap(back.rgb)), 1.0); return; }
     vec3 p = eyeAt(t);
-    ivec2 size = ivec2(uResolution) - 1;
+    ivec2 size = ivec2(uFluidResolution) - 1;
     vec3 px = eyeAt(min(t + ivec2(1, 0), size)) - p, mx = p - eyeAt(max(t - ivec2(1, 0), ivec2(0)));
     vec3 py = eyeAt(min(t + ivec2(0, 1), size)) - p, my = p - eyeAt(max(t - ivec2(0, 1), ivec2(0)));
     vec3 dx = abs(px.z) < abs(mx.z) ? px : mx;
@@ -248,8 +251,8 @@ void main() {
         float r = fresnel(cosI, 1.0, nn);
         // Refraction: the background seen through the liquid, shifted along the surface's slope by an amount that
         // grows with thickness and with the index's excess over one.
-        vec2 shift = nEye.xy * thickness * (nn - 1.0) * 1.5 / max(0.05, depth) * uResolution.y * 0.5 / uTanHalf / uResolution;
-        ivec2 st = clamp(t + ivec2(shift * uResolution), ivec2(0), size);
+        vec2 shift = nEye.xy * thickness * (nn - 1.0) * 1.5 / max(0.05, depth) * uResolution.y * 0.5 / uTanHalf;
+        ivec2 st = clamp(tf + ivec2(shift), ivec2(0), ivec2(uResolution) - 1);
         vec4 behind = texelFetch(uBackground, st, 0);
         if (behind.a < depth) behind = back;
         float through = behind[c] * exp(-uAlpha[c] * thickness);

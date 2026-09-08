@@ -271,11 +271,17 @@ void main() {
         return count;
     }
 
+    // The tank filled to a height, in whole layers, and only as many layers as the particle budget holds.
     function fillTank(view, height) {
         const { spec } = view;
         const d = spec.spacing;
+        const nx = Math.floor(spec.box[0] / d), nz = Math.floor(spec.box[2] / d);
+        const perLayer = nx * nz;
+        const wanted = Math.floor(height / d + 1e-6);
+        const layers = Math.max(0, Math.min(wanted, Math.floor((view.side * view.side - view.alive) / perLayer)));
+        view.fillShort = wanted - layers;
         const positions = [];
-        for (let z = d / 2; z < spec.box[2]; z += d) for (let y = d / 2; y < height; y += d) for (let x = d / 2; x < spec.box[0]; x += d) positions.push([x, y, z]);
+        for (let k = 0; k < layers; k++) for (let iz = 0; iz < nz; iz++) for (let ix = 0; ix < nx; ix++) positions.push([(ix + 0.5) * d, (k + 0.5) * d, (iz + 0.5) * d]);
         spawn(view, positions, [0, 0, 0]);
     }
 
@@ -290,6 +296,7 @@ void main() {
 
     function setCommon(view, u) {
         const { gl, spec, k } = view;
+        gl.uniform1f(u.uSpeedCap, spec.speedCap);
         gl.uniform1i(u.uSide, view.side);
         gl.uniform3f(u.uBox, spec.box[0], spec.box[1], spec.box[2]);
         gl.uniform1f(u.uSpacing, spec.spacing);
@@ -306,7 +313,7 @@ void main() {
     }
 
     function substep(view, dt) {
-        const { gl } = view;
+        const { gl, spec } = view;
         const n = view.side, total = n * n;
         gl.disable(gl.BLEND);
         gl.disable(gl.DEPTH_TEST);
@@ -321,12 +328,21 @@ void main() {
         // Keys, then the bitonic sort.
         pass(gl, view.keys, view.keysA, n, n, u => setCommon(view, u), { uPred: newPred });
         let a = view.keysA, b = view.keysB;
+        gl.useProgram(view.sort.program);
+        gl.uniform1i(view.sort.u.uSide, n);
+        gl.uniform1i(view.sort.u.uKeys, 0);
+        gl.activeTexture(gl.TEXTURE0);
         for (let stage = 2; stage <= total; stage <<= 1) {
             for (let step = stage >> 1; step > 0; step >>= 1) {
-                pass(gl, view.sort, b, n, n, u => { setCommon(view, u); gl.uniform1i(u.uStage, stage); gl.uniform1i(u.uStep, step); }, { uKeys: a.texture });
+                gl.bindFramebuffer(gl.FRAMEBUFFER, b.fbo);
+                gl.bindTexture(gl.TEXTURE_2D, a.texture);
+                gl.uniform1i(view.sort.u.uStage, stage);
+                gl.uniform1i(view.sort.u.uStep, step);
+                gl.drawArrays(gl.TRIANGLES, 0, 3);
                 [a, b] = [b, a];
             }
         }
+        gl.viewport(0, 0, n, n);
         view.keysA = a; view.keysB = b;
         check(view, "sort");
         const sortedKeys = a.texture;
@@ -349,7 +365,7 @@ void main() {
         const [sortedPos, , sortedPred] = view.sorted.textures;
         // The density constraint: four rounds of multipliers and corrections, the predictions ping-ponging.
         let pred = sortedPred;
-        for (let iteration = 0; iteration < 4; iteration++) {
+        for (let iteration = 0; iteration < spec.iterations; iteration++) {
             const target = view.predTargets[iteration % 2];
             pass(gl, view.lambda, view.lambdaTex, n, n, u => setCommon(view, u), { uPred: pred, ...grid });
             pass(gl, view.delta, target, n, n, u => setCommon(view, u), { uPred: pred, uLambda: view.lambdaTex.texture, ...grid });
@@ -375,17 +391,24 @@ void main() {
         }
     }
 
-    // The stream: particles released a few at a time from the spout, falling at the speed of the fall so far.
+    // The stream: a disc of the stream's cross-section on the rest lattice, released every time the last one has
+    // fallen one spacing, so the column is continuous at the liquid's density and pours πr²v.
     function pourIfDue(view, dt) {
         const { spec } = view;
         if (!view.pouring) return;
         view.pourClock += dt;
-        const perParticle = 1 / spec.pourRate;
         const d = spec.spacing;
-        while (view.pourClock >= perParticle) {
-            view.pourClock -= perParticle;
-            const jitter = () => (Math.random() - 0.5) * d;
-            spawn(view, [[view.pouring[0] + jitter(), spec.box[1] - d, view.pouring[1] + jitter()]], [0, -spec.pourSpeed, 0]);
+        const v = Math.max(0.05, spec.pourSpeed);
+        const interval = d / v;
+        while (view.pourClock >= interval) {
+            view.pourClock -= interval;
+            const r = spec.streamRadius;
+            const positions = [];
+            for (let z = -r; z <= r; z += d) for (let x = -r; x <= r; x += d) {
+                if (x * x + z * z <= r * r) positions.push([view.pouring[0] + x, spec.box[1] - d, view.pouring[1] + z]);
+            }
+            if (positions.length === 0) positions.push([view.pouring[0], spec.box[1] - d, view.pouring[1]]);
+            spawn(view, positions, [0, -v, 0]);
         }
     }
 
@@ -442,15 +465,18 @@ void main() {
         if (c.width !== width || c.height !== height) { c.width = width; c.height = height; }
     }
 
+    // The fluid's depth and thickness at half the screen's resolution: a smoothed surface does not need more, and the
+    // blur costs a quarter as much.
     function screenTargets(view, width, height) {
         const { gl } = view;
+        const fw = Math.max(1, Math.round(width / 2)), fh = Math.max(1, Math.round(height / 2));
         if (view.screen && view.screen.width === width && view.screen.height === height) return view.screen;
         const s = {
-            width, height,
+            width, height, fw, fh,
             background: makeTarget(gl, width, height, gl.RGBA32F, gl.RGBA, gl.FLOAT),
-            depthA: makeTarget(gl, width, height, gl.R32F, gl.RED, gl.FLOAT, 1, true),
-            depthB: makeTarget(gl, width, height, gl.R32F, gl.RED, gl.FLOAT),
-            thickness: makeTarget(gl, width, height, gl.R16F, gl.RED, gl.HALF_FLOAT),
+            depthA: makeTarget(gl, fw, fh, gl.R32F, gl.RED, gl.FLOAT, 1, true),
+            depthB: makeTarget(gl, fw, fh, gl.R32F, gl.RED, gl.FLOAT),
+            thickness: makeTarget(gl, fw, fh, gl.R16F, gl.RED, gl.HALF_FLOAT),
         };
         view.screen = s;
         return s;
@@ -463,8 +489,9 @@ void main() {
         const s = screenTargets(view, w, h);
         const m = matrices(view, w, h);
         const light = lightDirection(spec);
+        let rw = w, rh = h;
         const common = u => {
-            gl.uniform2f(u.uResolution, w, h);
+            gl.uniform2f(u.uResolution, rw, rh);
             gl.uniformMatrix4fv(u.uView, false, m.viewM);
             gl.uniformMatrix4fv(u.uProjection, false, m.proj);
             gl.uniform3fv(u.uEye, m.eye);
@@ -484,9 +511,10 @@ void main() {
         gl.disable(gl.BLEND);
         gl.disable(gl.DEPTH_TEST);
         pass(gl, view.background, s.background, w, h, common, {});
-        // Sphere depth with the depth test.
+        // Sphere depth with the depth test, at the fluid buffers' resolution.
+        rw = s.fw; rh = s.fh;
         gl.bindFramebuffer(gl.FRAMEBUFFER, s.depthA.fbo);
-        gl.viewport(0, 0, w, h);
+        gl.viewport(0, 0, rw, rh);
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         gl.enable(gl.DEPTH_TEST);
@@ -511,16 +539,15 @@ void main() {
         common(view.sphereThickness.u);
         gl.drawArrays(gl.POINTS, 0, view.side * view.side);
         gl.disable(gl.BLEND);
-        // Smooth the depth twice along each axis.
-        const blur = Math.max(4, Math.min(24, spec.spacing * 0.75 * 2 * m.proj[5] * h / (2 * 0.5)));
+        // Smooth the depth once along each axis, with a radius of about a particle on screen.
+        const blur = Math.max(3, Math.min(12, spec.spacing * 0.75 * m.proj[5] * rh / (2 * 0.5)));
         let from = s.depthA, to = s.depthB;
-        for (let k = 0; k < 2; k++) {
-            pass(gl, view.smooth, to, w, h, u => { common(u); gl.uniform2f(u.uAxis, 1, 0); gl.uniform1f(u.uBlurRadius, blur); }, { uDepth: from.texture });
-            [from, to] = [to, from];
-            pass(gl, view.smooth, to, w, h, u => { common(u); gl.uniform2f(u.uAxis, 0, 1); gl.uniform1f(u.uBlurRadius, blur); }, { uDepth: from.texture });
-            [from, to] = [to, from];
-        }
-        pass(gl, view.compose, null, w, h, common, { uDepth: from.texture, uThickness: s.thickness.texture, uBackground: s.background.texture });
+        pass(gl, view.smooth, to, rw, rh, u => { common(u); gl.uniform2f(u.uAxis, 1, 0); gl.uniform1f(u.uBlurRadius, blur); }, { uDepth: from.texture });
+        [from, to] = [to, from];
+        pass(gl, view.smooth, to, rw, rh, u => { common(u); gl.uniform2f(u.uAxis, 0, 1); gl.uniform1f(u.uBlurRadius, blur); }, { uDepth: from.texture });
+        [from, to] = [to, from];
+        rw = w; rh = h;
+        pass(gl, view.compose, null, w, h, u => { common(u); gl.uniform2f(u.uFluidResolution, s.fw, s.fh); }, { uDepth: from.texture, uThickness: s.thickness.texture, uBackground: s.background.texture });
         check(view, "draw");
         view.checked = (view.checked || 0) + 1;
     }
@@ -681,6 +708,12 @@ void main() {
         count(id) {
             const view = views.get(document.getElementById(id));
             return view ? view.alive : 0;
+        },
+        // Litres in the tank: particles times the spacing cube; and how many layers the fill fell short by.
+        volume(id) {
+            const view = views.get(document.getElementById(id));
+            if (!view || !view.spec) return [0, 0];
+            return [view.alive * Math.pow(view.spec.spacing, 3) * 1000, view.fillShort || 0];
         },
         dolly(id, factor) {
             const view = views.get(document.getElementById(id));

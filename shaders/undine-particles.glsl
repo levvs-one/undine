@@ -31,6 +31,7 @@ uniform ivec3 uCells;          // grid cells per axis
 uniform int uCellSide;         // cell table texture side
 uniform float uSmoothing;
 uniform float uRelaxation;
+uniform float uSpeedCap;       // m/s: no particle moves faster; a safety, not physics
 uniform sampler2D uWallDensity; // 1D table of the density a wall hides, over distance 0..h
 
 const int MAX_IN_CELL = 24;
@@ -311,6 +312,8 @@ void main() {
         }
     }
     v += blend * uSmoothing;
+    float speed = length(v);
+    if (speed > uSpeedCap) v *= uSpeedCap / speed;
     outPos = vec4(p, 1.0);
     outVel = vec4(v, 0.0);
 }
