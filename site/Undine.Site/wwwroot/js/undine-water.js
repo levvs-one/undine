@@ -102,9 +102,25 @@ void main() {
         return { texture, fbo, size };
     }
 
-    async function setup(canvas) {
+    // The context, with the reason when there is none: a browser that has WebGL1 only, WebGL switched off, or WebGL
+    // blocked for this site after its GPU process crashed, which reads the same as a black canvas otherwise.
+    function openContext(canvas) {
+        let why = "";
+        canvas.addEventListener("webglcontextcreationerror", e => { why = e.statusMessage || ""; }, { once: true });
         const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: true });
-        if (!gl || !gl.getExtension("EXT_color_buffer_float")) return null;
+        if (!gl) {
+            const detail = why ? " (" + why + ")" : "";
+            const legacy = document.createElement("canvas").getContext("webgl");
+            throw new Error(legacy
+                ? "WebGL2 is not available in this browser, only WebGL1, and this page needs WebGL2" + detail
+                : "WebGL is off in this browser: hardware acceleration is disabled, or the browser blocked WebGL for this site after its GPU process crashed. Reload the page; if it stays so, restart the browser and look at chrome://gpu" + detail);
+        }
+        if (!gl.getExtension("EXT_color_buffer_float")) throw new Error("This GPU has no float render targets (EXT_color_buffer_float), which the simulation needs");
+        return gl;
+    }
+
+    async function setup(canvas) {
+        const gl = openContext(canvas);
         const src = await loadSources();
         const view = {
             canvas, gl,
@@ -439,7 +455,22 @@ void main() {
     }
 
     return {
-        // Returns false without WebGL2 float targets; the page then says so instead of showing a still.
+        // The page is going: its context goes with it, since a browser keeps only so many and loses the oldest, and
+        // any canvas already gone from the document is freed too.
+        dispose(id) {
+            for (const [canvas, view] of [...views]) {
+                if (canvas.id !== id && canvas.isConnected) continue;
+                cancelAnimationFrame(view.frame);
+                clearTimeout(view.fallback);
+                view.frame = 0;
+                view.spec = null;
+                const lose = view.gl.getExtension("WEBGL_lose_context");
+                if (lose) lose.loseContext();
+                views.delete(canvas);
+                setupErrors.delete(canvas);
+            }
+        },
+        // Returns false when the pool could not be set up; the page then says why instead of showing a still.
         async render(id, spec) {
             const canvas = document.getElementById(id);
             if (!canvas) return false;
@@ -452,7 +483,7 @@ void main() {
                     setupErrors.set(canvas, String(error && error.message || error));
                     return false;
                 }
-                if (!view) { setupErrors.set(canvas, "WebGL2 with float render targets (EXT_color_buffer_float) is not available in this browser"); return false; }
+                if (!view) { setupErrors.set(canvas, "The pool could not be set up"); return false; }
                 views.set(canvas, view);
                 // Three drops at the start so the water is never still.
                 for (const delay of [300, 900, 1700]) setTimeout(() => this.drop(id), delay);

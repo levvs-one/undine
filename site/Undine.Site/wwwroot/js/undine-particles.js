@@ -146,9 +146,25 @@ void main() {
         return { mass, density, gradient, gamma, wall, h, step: Math.min(0.2 * d, capillary, viscous) };
     }
 
-    async function setup(canvas) {
+    // The context, with the reason when there is none: a browser that has WebGL1 only, WebGL switched off, or WebGL
+    // blocked for this site after its GPU process crashed, which reads the same as a black canvas otherwise.
+    function openContext(canvas) {
+        let why = "";
+        canvas.addEventListener("webglcontextcreationerror", e => { why = e.statusMessage || ""; }, { once: true });
         const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: true });
-        if (!gl || !gl.getExtension("EXT_color_buffer_float")) return null;
+        if (!gl) {
+            const detail = why ? " (" + why + ")" : "";
+            const legacy = document.createElement("canvas").getContext("webgl");
+            throw new Error(legacy
+                ? "WebGL2 is not available in this browser, only WebGL1, and this page needs WebGL2" + detail
+                : "WebGL is off in this browser: hardware acceleration is disabled, or the browser blocked WebGL for this site after its GPU process crashed. Reload the page; if it stays so, restart the browser and look at chrome://gpu" + detail);
+        }
+        if (!gl.getExtension("EXT_color_buffer_float")) throw new Error("This GPU has no float render targets (EXT_color_buffer_float), which the simulation needs");
+        return gl;
+    }
+
+    async function setup(canvas) {
+        const gl = openContext(canvas);
         const src = await loadSources();
         const P = src.sim.prelude, R = src.render.prelude;
         const view = {
@@ -383,7 +399,7 @@ void main() {
     function step(view, seconds) {
         const { spec, k } = view;
         const dt = k.step;
-        const substeps = Math.min(40, Math.max(1, Math.ceil(seconds / dt)));
+        const substeps = Math.min(12, Math.max(1, Math.ceil(seconds / dt)));
         const sub = seconds / substeps;
         for (let i = 0; i < substeps; i++) {
             pourIfDue(view, sub);
@@ -567,7 +583,11 @@ void main() {
 
     function frame(view, time) {
         if (!view.spec || !document.body.contains(view.canvas)) return;
-        const seconds = view.lastTime ? Math.min(0.033, (time - view.lastTime) / 1000) : 1 / 60;
+        const interval = view.lastTime ? (time - view.lastTime) / 1000 : 1 / 60;
+        // A GPU that cannot keep up gets less simulated time per frame, so the liquid slows down, rather than a frame
+        // long enough for the driver to reset the context and the browser to give up on WebGL.
+        view.budget = interval > 0.05 ? Math.max(0.05, (view.budget || 1) * 0.7) : Math.min(1, (view.budget || 1) * 1.05);
+        const seconds = Math.min(0.033, interval) * view.budget;
         view.lastTime = time;
         try {
             if (view.gl.isContextLost()) throw new Error("WebGL context lost: the driver reset it, which happens when a pass takes too long on this GPU");
@@ -682,13 +702,29 @@ void main() {
                     setupErrors.set(canvas, String(error && error.message || error));
                     return false;
                 }
-                if (!view) { setupErrors.set(canvas, "WebGL2 with float render targets (EXT_color_buffer_float) is not available"); return false; }
+                if (!view) { setupErrors.set(canvas, "The tank could not be set up"); return false; }
                 views.set(canvas, view);
             }
             view.spec = spec;
             schedule(view);
             return true;
         },
+        // The page is going: its context goes with it, since a browser keeps only so many and loses the oldest, and
+        // any canvas already gone from the document is freed too.
+        dispose(id) {
+            for (const [canvas, view] of [...views]) {
+                if (canvas.id !== id && canvas.isConnected) continue;
+                cancelAnimationFrame(view.frame);
+                clearTimeout(view.fallback);
+                view.frame = 0;
+                view.spec = null;
+                const lose = view.gl.getExtension("WEBGL_lose_context");
+                if (lose) lose.loseContext();
+                views.delete(canvas);
+                setupErrors.delete(canvas);
+            }
+        },
+
         drop(id) {
             const view = views.get(document.getElementById(id));
             if (!view || !view.spec) return;

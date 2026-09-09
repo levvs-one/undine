@@ -213,5 +213,10 @@
 
     private Task Dolly(double factor) => Js.InvokeVoidAsync("undineWater.dolly", "water", factor).AsTask();
 
-    public void Dispose() => fpsTimer?.Dispose();
+    public void Dispose()
+    {
+        fpsTimer?.Dispose();
+        // The page's WebGL context goes with the page: a browser keeps only so many and loses the oldest otherwise.
+        _ = Js.InvokeVoidAsync("undineWater.dispose", "water").AsTask();
+    }
 }

@@ -236,5 +236,10 @@
 
     private Task Dolly(double factor) => Js.InvokeVoidAsync("undineParticles.dolly", "tank", factor).AsTask();
 
-    public void Dispose() => pollTimer?.Dispose();
+    public void Dispose()
+    {
+        pollTimer?.Dispose();
+        // The page's WebGL context goes with the page: a browser keeps only so many and loses the oldest otherwise.
+        _ = Js.InvokeVoidAsync("undineParticles.dispose", "tank").AsTask();
+    }
 }
