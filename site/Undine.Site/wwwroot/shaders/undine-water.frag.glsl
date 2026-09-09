@@ -90,14 +90,43 @@ vec3 lining(vec2 xz, float w) {
     return mix(colour, vec3(0.72, 0.73, 0.71), grout);
 }
 
-// The sky the water reflects: bright haze at the horizon, deep blue overhead, the sun as a small disc with a glow.
-// Ripples show as the reflection slides between the haze and the blue, and as glints when a slope catches the sun.
+// The sky the water reflects is Preetham, Shirley and Smits's analytic daylight (1999): the Perez distributions of
+// luminance and CIE chromaticity for a clear sky of turbidity 2.4, from the sun's elevation, converted from xyY to
+// linear sRGB; the sun itself is a disc. A low sun reddens the horizon and dims the zenith, and the water's colour
+// follows. Ripples show as the reflection slides across the sky's gradient, and as glints when a slope catches the sun.
+const float TURBIDITY = 2.4;
+const float SKY_SCALE = 0.06;    // kcd/m² of the model to the scene's units, chosen so a noon zenith reads 0.4
+
+float perez(float cosTheta, float gamma, float A, float B, float C, float D, float E) {
+    return (1.0 + A * exp(B / max(cosTheta, 0.01))) * (1.0 + C * exp(D * gamma) + E * cos(gamma) * cos(gamma));
+}
+
 vec3 sky(vec3 d) {
-    float t = clamp(d.y, 0.0, 1.0);
-    vec3 s = mix(vec3(0.66, 0.78, 0.92), vec3(0.16, 0.36, 0.78), pow(t, 0.5));
-    vec3 toLamp = -uLight;
-    float key = max(0.0, dot(d, toLamp));
-    s += vec3(1.0, 0.96, 0.88) * uLampStrength * (60.0 * smoothstep(0.99985, 0.99997, key) + 1.5 * pow(key, 40.0) + 0.3 * pow(key, 6.0));
+    vec3 toSun = -uLight;
+    float T = TURBIDITY;
+    float cosTheta = max(d.y, 0.0);
+    float thetaS = acos(clamp(toSun.y, 0.0, 1.0));
+    float gamma = acos(clamp(dot(d, toSun), -1.0, 1.0));
+    // The zenith's luminance and chromaticity for this turbidity and sun.
+    float chi = (4.0 / 9.0 - T / 120.0) * (3.14159265 - 2.0 * thetaS);
+    float Yz = (4.0453 * T - 4.9710) * tan(chi) - 0.2155 * T + 2.4192;
+    float t2 = thetaS * thetaS, t3 = t2 * thetaS;
+    float xz = (0.00166 * t3 - 0.00375 * t2 + 0.00209 * thetaS) * T * T + (-0.02903 * t3 + 0.06377 * t2 - 0.03202 * thetaS + 0.00394) * T + (0.11693 * t3 - 0.21196 * t2 + 0.06052 * thetaS + 0.25886);
+    float yz = (0.00275 * t3 - 0.00610 * t2 + 0.00317 * thetaS) * T * T + (-0.04214 * t3 + 0.08970 * t2 - 0.04153 * thetaS + 0.00516) * T + (0.15346 * t3 - 0.26756 * t2 + 0.06670 * thetaS + 0.26688);
+    // The Perez distributions, each relative to its value at the zenith.
+    float Y = Yz * perez(cosTheta, gamma, 0.1787 * T - 1.4630, -0.3554 * T + 0.4275, -0.0227 * T + 5.3251, 0.1206 * T - 2.5771, -0.0670 * T + 0.3703)
+                 / perez(1.0, thetaS, 0.1787 * T - 1.4630, -0.3554 * T + 0.4275, -0.0227 * T + 5.3251, 0.1206 * T - 2.5771, -0.0670 * T + 0.3703);
+    float x = xz * perez(cosTheta, gamma, -0.0193 * T - 0.2592, -0.0665 * T + 0.0008, -0.0004 * T + 0.2125, -0.0641 * T - 0.8989, -0.0033 * T + 0.0452)
+                 / perez(1.0, thetaS, -0.0193 * T - 0.2592, -0.0665 * T + 0.0008, -0.0004 * T + 0.2125, -0.0641 * T - 0.8989, -0.0033 * T + 0.0452);
+    float y = yz * perez(cosTheta, gamma, -0.0167 * T - 0.2608, -0.0950 * T + 0.0092, -0.0079 * T + 0.2102, -0.0441 * T - 1.6537, -0.0109 * T + 0.0529)
+                 / perez(1.0, thetaS, -0.0167 * T - 0.2608, -0.0950 * T + 0.0092, -0.0079 * T + 0.2102, -0.0441 * T - 1.6537, -0.0109 * T + 0.0529);
+    float Yl = max(Y, 0.0) * SKY_SCALE;
+    y = max(y, 1e-3);
+    vec3 XYZ = vec3(x * Yl / y, Yl, (1.0 - x - y) * Yl / y);
+    vec3 s = max(mat3(3.2406, -0.9689, 0.0557, -1.5372, 1.8758, -0.2040, -0.4986, 0.0415, 1.0570) * XYZ, vec3(0.0));
+    // The sun's disc (half a degree across) and the bright rim of its aureole the distribution above smooths over.
+    float key = max(0.0, dot(d, toSun));
+    s += vec3(1.0, 0.96, 0.88) * uLampStrength * (60.0 * smoothstep(0.99985, 0.99997, key) + 1.5 * pow(key, 40.0));
     return s;
 }
 
