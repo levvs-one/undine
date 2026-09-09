@@ -181,6 +181,7 @@ void main() {
             sphereDepth: link(gl, R + src.render.sphereVertex, R + src.render.sphereDepth, "sphere depth"),
             sphereThickness: link(gl, R + src.render.sphereVertex, R + src.render.sphereThickness, "sphere thickness"),
             smooth: link(gl, VERTEX, R + src.render.smooth, "smooth"),
+            curvature: link(gl, VERTEX, R + src.render.curvature, "curvature"),
             compose: link(gl, VERTEX, R + src.render.compose, "compose"),
             foam: link(gl, R + src.render.foamVertex, R + src.render.foamFragment, "foam"),
             spec: null, key: "", side: 0, alive: 0, k: null,
@@ -577,6 +578,13 @@ void main() {
         [from, to] = [to, from];
         pass(gl, view.smooth, to, rw, rh, u => { common(u); gl.uniform2f(u.uAxis, 0, 1); gl.uniform1f(u.uBlurRadius, blur); }, { uDepth: from.texture });
         [from, to] = [to, from];
+        // Then the surface tension of the picture: curvature flow, thirty passes, each moving the surface at its
+        // mean curvature by the bound of an explicit step.
+        const cx = 2 / (rw * m.proj[0]), cy = 2 / (rh * m.proj[5]);
+        for (let i = 0; i < 30; i++) {
+            pass(gl, view.curvature, to, rw, rh, u => { common(u); gl.uniform2f(u.uC, cx, cy); }, { uDepth: from.texture });
+            [from, to] = [to, from];
+        }
         rw = w; rh = h;
         pass(gl, view.compose, null, w, h, u => { common(u); gl.uniform2f(u.uFluidResolution, s.fw, s.fh); }, { uDepth: from.texture, uThickness: s.thickness.texture, uFoam: s.foam.texture, uBackground: s.background.texture });
         check(view, "draw");

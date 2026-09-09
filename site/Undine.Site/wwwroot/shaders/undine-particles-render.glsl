@@ -200,6 +200,44 @@ void main() {
     outDepth = vec4(weight > 0.0 ? sum / weight : centre, 0.0, 0.0, 1.0);
 }
 
+//@ curvature
+// Curvature flow on the depth image (van der Laan, Green and Sainz 2009): the surface moves along its normal at
+// its mean curvature, which is what surface tension does to a real surface, so the spheres' bumps flatten, necks
+// between blobs thin and drops round off, and silhouettes are left alone. Run many times per frame.
+uniform sampler2D uDepth;
+uniform vec2 uC;               // 2/(width·focal), 2/(height·focal): a pixel's size in eye space per unit of depth
+out vec4 outDepth;
+float depthAt(ivec2 t) { return texelFetch(uDepth, clamp(t, ivec2(0), ivec2(uResolution) - 1), 0).r; }
+void main() {
+    ivec2 t = ivec2(gl_FragCoord.xy);
+    float z = depthAt(t);
+    if (z <= 0.0) { outDepth = vec4(0.0); return; }
+    float zl = depthAt(t - ivec2(1, 0)), zr = depthAt(t + ivec2(1, 0));
+    float zd = depthAt(t - ivec2(0, 1)), zu = depthAt(t + ivec2(0, 1));
+    // A neighbour across a silhouette (no liquid, or a jump of more than a few radii) does not count: the surface
+    // there is a different one, and the flow must not pull the two together.
+    float jump = 4.0 * uRadius;
+    if (zl <= 0.0 || abs(zl - z) > jump) zl = z;
+    if (zr <= 0.0 || abs(zr - z) > jump) zr = z;
+    if (zd <= 0.0 || abs(zd - z) > jump) zd = z;
+    if (zu <= 0.0 || abs(zu - z) > jump) zu = z;
+    float zx = 0.5 * (zr - zl), zy = 0.5 * (zu - zd);
+    float zxx = zr - 2.0 * z + zl, zyy = zu - 2.0 * z + zd;
+    float zul = depthAt(t + ivec2(-1, 1)), zur = depthAt(t + ivec2(1, 1)), zdl = depthAt(t + ivec2(-1, -1)), zdr = depthAt(t + ivec2(1, -1));
+    float zxy = (zul > 0.0 && zur > 0.0 && zdl > 0.0 && zdr > 0.0 && abs(zur - z) < jump && abs(zul - z) < jump && abs(zdr - z) < jump && abs(zdl - z) < jump)
+        ? 0.25 * (zur - zul - zdr + zdl) : 0.0;
+    float cx = uC.x, cy = uC.y;
+    float D = cy * cy * zx * zx + cx * cx * zy * zy + cx * cx * cy * cy * z * z;
+    float Dx = 2.0 * (cy * cy * zx * zxx + cx * cx * zy * zxy + cx * cx * cy * cy * z * zx);
+    float Dy = 2.0 * (cy * cy * zx * zxy + cx * cx * zy * zyy + cx * cx * cy * cy * z * zy);
+    float Ex = 0.5 * zx * Dx - zxx * D, Ey = 0.5 * zy * Dy - zyy * D;
+    float H = (cy * Ex + cx * Ey) / (2.0 * pow(max(D, 1e-12), 1.5));
+    // The step: a quarter of a pixel's eye-space size squared, the bound of an explicit diffusion, per pass.
+    float pixel = z * max(cx, cy);
+    z += 0.25 * pixel * pixel * H;
+    outDepth = vec4(max(z, 0.0), 0.0, 0.0, 1.0);
+}
+
 //@ compose
 // The liquid over the background: the surface from the smoothed depth, lit by the liquid's own optics.
 uniform sampler2D uDepth;
