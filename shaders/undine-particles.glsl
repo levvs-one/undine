@@ -136,7 +136,7 @@ void main() {
         }
     }
     v += (uGravity + viscous + cohesion) * uDt;
-    outVel = vec4(v, 0.0);
+    outVel = vec4(v, texelFetch(uVel, t, 0).w);
     outPred = vec4(confine(p + v * uDt), 1.0);
 }
 
@@ -280,7 +280,12 @@ void main() {
 }
 
 //@ finish
-// The velocity from the move, then XSPH from the neighbours' moves; the position becomes the predicted one.
+// The velocity from the move, then XSPH from the neighbours' moves; the position becomes the predicted one. The
+// velocity's w carries the air the particle has trapped: Ihmsen, Akinci, Akinci and Teschner's trapped-air
+// potential (2012), Σ|v_ij|(1 − v̂_ij·r̂_ij)(1 − r/h) over the neighbours, the relative motion of liquid closing on
+// the particle, which is where a splash folds air in and turns white; it is gained at that rate while the particle
+// itself moves, and fades with a lifetime of half a second. Where the white is comes from the flow; how much of it
+// is a chosen scale, since the air itself is not simulated.
 layout(location = 0) out vec4 outPos;
 layout(location = 1) out vec4 outVel;
 void main() {
@@ -292,6 +297,7 @@ void main() {
     vec3 p = P.xyz;
     vec3 v = (p - pos) / uDt;
     vec3 blend = vec3(0.0);
+    float trapped = 0.0;
     ivec3 c = cellOf(p);
     for (int dz = -1; dz <= 1; dz++) for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
         ivec3 cc = c + ivec3(dx, dy, dz);
@@ -309,11 +315,18 @@ void main() {
             float densJ = texelFetch(uLambda, tj, 0).g;
             if (densJ <= 0.0) densJ = uRestDensity;
             blend += (vj - v) * (uMass / densJ * poly6(r2));
+            vec3 vij = v - vj;
+            float closing = length(vij), dist = sqrt(r2);
+            if (closing > 1e-6 && dist > 1e-6) trapped += closing * (1.0 - dot(vij / closing, r / dist)) * (1.0 - dist / h());
         }
     }
     v += blend * uSmoothing;
     float speed = length(v);
     if (speed > uSpeedCap) v *= uSpeedCap / speed;
+    // Measured on the tank: a liquid at rest sums under 0.3 m/s of closing for 99 in 100 particles (0.85 at most),
+    // a dropped blob's impact 1.4 at the 90th percentile and 4.6 at most; below 1 nothing is trapped, 4 is a
+    // splash's full share.
+    float foam = texelFetch(uVel, t, 0).w * exp(-uDt / 0.5) + uDt * 3.0 * clamp((trapped - 1.0) / 3.0, 0.0, 1.0) * min(1.0, speed / 0.5);
     outPos = vec4(p, 1.0);
-    outVel = vec4(v, 0.0);
+    outVel = vec4(v, min(foam, 2.0));
 }

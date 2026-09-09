@@ -182,6 +182,7 @@ void main() {
             sphereThickness: link(gl, R + src.render.sphereVertex, R + src.render.sphereThickness, "sphere thickness"),
             smooth: link(gl, VERTEX, R + src.render.smooth, "smooth"),
             compose: link(gl, VERTEX, R + src.render.compose, "compose"),
+            foam: link(gl, R + src.render.foamVertex, R + src.render.foamFragment, "foam"),
             spec: null, key: "", side: 0, alive: 0, k: null,
             yaw: 0.6, pitch: 0.35, distance: 0.75,
             pointers: new Map(), pinch: 0, dragging: false, lastX: 0, lastY: 0, pouring: null, pourClock: 0,
@@ -390,7 +391,7 @@ void main() {
         check(view, "constraint");
         // The velocity from the move, smoothed; the position becomes the predicted one; the other state takes over.
         const next = view.states[1 - view.current];
-        pass(gl, view.finish, next, n, n, u => { setCommon(view, u); gl.uniform1f(u.uDt, dt); }, { uPred: pred, uPos: sortedPos, uLambda: view.lambdaTex.texture, ...grid });
+        pass(gl, view.finish, next, n, n, u => { setCommon(view, u); gl.uniform1f(u.uDt, dt); }, { uPred: pred, uPos: sortedPos, uVel: view.sorted.textures[1], uLambda: view.lambdaTex.texture, ...grid });
         view.current = 1 - view.current;
         check(view, "finish");
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -399,7 +400,7 @@ void main() {
     function step(view, seconds) {
         const { spec, k } = view;
         const dt = k.step;
-        const substeps = Math.min(12, Math.max(1, Math.ceil(seconds / dt)));
+        const substeps = Math.min(24, Math.max(1, Math.ceil(seconds / dt)));
         const sub = seconds / substeps;
         for (let i = 0; i < substeps; i++) {
             pourIfDue(view, sub);
@@ -493,6 +494,7 @@ void main() {
             depthA: makeTarget(gl, fw, fh, gl.R32F, gl.RED, gl.FLOAT, 1, true),
             depthB: makeTarget(gl, fw, fh, gl.R32F, gl.RED, gl.FLOAT),
             thickness: makeTarget(gl, fw, fh, gl.R16F, gl.RED, gl.HALF_FLOAT),
+            foam: makeTarget(gl, fw, fh, gl.R16F, gl.RED, gl.HALF_FLOAT),
         };
         view.screen = s;
         return s;
@@ -554,6 +556,19 @@ void main() {
         gl.uniform1i(view.sphereThickness.u.uSide, view.side);
         common(view.sphereThickness.u);
         gl.drawArrays(gl.POINTS, 0, view.side * view.side);
+        // Foam, additive too, from the particles that have trapped air.
+        gl.bindFramebuffer(gl.FRAMEBUFFER, s.foam.fbo);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.useProgram(view.foam.program);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, view.states[view.current].textures[0]);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, view.states[view.current].textures[1]);
+        gl.uniform1i(view.foam.u.uPos, 0);
+        gl.uniform1i(view.foam.u.uVel, 1);
+        gl.uniform1i(view.foam.u.uSide, view.side);
+        common(view.foam.u);
+        gl.drawArrays(gl.POINTS, 0, view.side * view.side);
         gl.disable(gl.BLEND);
         // Smooth the depth once along each axis, with a radius of about a particle on screen.
         const blur = Math.max(3, Math.min(12, spec.spacing * 0.75 * m.proj[5] * rh / (2 * 0.5)));
@@ -563,7 +578,7 @@ void main() {
         pass(gl, view.smooth, to, rw, rh, u => { common(u); gl.uniform2f(u.uAxis, 0, 1); gl.uniform1f(u.uBlurRadius, blur); }, { uDepth: from.texture });
         [from, to] = [to, from];
         rw = w; rh = h;
-        pass(gl, view.compose, null, w, h, u => { common(u); gl.uniform2f(u.uFluidResolution, s.fw, s.fh); }, { uDepth: from.texture, uThickness: s.thickness.texture, uBackground: s.background.texture });
+        pass(gl, view.compose, null, w, h, u => { common(u); gl.uniform2f(u.uFluidResolution, s.fw, s.fh); }, { uDepth: from.texture, uThickness: s.thickness.texture, uFoam: s.foam.texture, uBackground: s.background.texture });
         check(view, "draw");
         view.checked = (view.checked || 0) + 1;
     }
@@ -781,7 +796,7 @@ void main() {
                 return data;
             };
             const pos = read(0), vel = read(1);
-            let count = 0, sumY = 0, top = -1, sumV2 = 0;
+            let count = 0, sumY = 0, top = -1, sumV2 = 0, foamSum = 0, foamMax = 0, foamy = 0;
             const heights = [];
             for (let i = 0; i < n * n; i++) {
                 if (pos[i * 4 + 3] < 0.5) continue;
@@ -790,9 +805,13 @@ void main() {
                 heights.push(pos[i * 4 + 1]);
                 top = Math.max(top, pos[i * 4 + 1]);
                 sumV2 += vel[i * 4] ** 2 + vel[i * 4 + 1] ** 2 + vel[i * 4 + 2] ** 2;
+                const foam = vel[i * 4 + 3];
+                foamSum += foam;
+                foamMax = Math.max(foamMax, foam);
+                if (foam > 0.1) foamy++;
             }
             heights.sort((a, b) => a - b);
-            return { count, meanY: sumY / Math.max(1, count), top, top98: heights[Math.floor(heights.length * 0.98)] || 0, rmsSpeed: Math.sqrt(sumV2 / Math.max(1, count)) };
+            return { count, meanY: sumY / Math.max(1, count), top, top98: heights[Math.floor(heights.length * 0.98)] || 0, rmsSpeed: Math.sqrt(sumV2 / Math.max(1, count)), foamMean: foamSum / Math.max(1, count), foamMax, foamy };
         },
         snapshot(id, width, height, seconds, action, debug) {
             const view = views.get(document.getElementById(id));

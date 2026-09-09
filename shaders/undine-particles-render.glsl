@@ -204,6 +204,7 @@ void main() {
 // The liquid over the background: the surface from the smoothed depth, lit by the liquid's own optics.
 uniform sampler2D uDepth;
 uniform sampler2D uThickness;
+uniform sampler2D uFoam;       // the trapped air on screen, from the foam sprites
 uniform sampler2D uBackground;
 uniform vec3 uForward, uRight, uUp;
 uniform float uTanHalf;
@@ -225,7 +226,10 @@ void main() {
     // The fluid images are smaller than the screen: the matching texel.
     ivec2 t = ivec2(gl_FragCoord.xy * uFluidResolution / uResolution);
     float depth = texelFetch(uDepth, t, 0).r;
-    if (depth <= 0.0 || depth > back.a) { outColour = vec4(compand(tonemap(back.rgb)), 1.0); return; }
+    // Foam: white water, lit by the room, over whatever is there, liquid or not (spray carries it too).
+    float white = 1.0 - exp(-texelFetch(uFoam, t, 0).r);
+    vec3 foamColour = vec3(0.92, 0.94, 0.96) * (0.55 + 0.45 * uLampStrength);
+    if (depth <= 0.0 || depth > back.a) { outColour = vec4(compand(tonemap(mix(back.rgb, foamColour, white))), 1.0); return; }
     vec3 p = eyeAt(t);
     ivec2 size = ivec2(uFluidResolution) - 1;
     vec3 px = eyeAt(min(t + ivec2(1, 0), size)) - p, mx = p - eyeAt(max(t - ivec2(1, 0), ivec2(0)));
@@ -258,5 +262,33 @@ void main() {
         float through = behind[c] * exp(-uAlpha[c] * thickness);
         colour[c] = r * reflection[c] + (1.0 - r) * through;
     }
-    outColour = vec4(compand(tonemap(colour)), 1.0);
+    outColour = vec4(compand(tonemap(mix(colour, foamColour, white))), 1.0);
+}
+
+//@ foamVertex
+// Foam sprites: each particle that has trapped air, sized as its sphere, carrying how much.
+uniform sampler2D uPos;
+uniform sampler2D uVel;
+uniform int uSide;
+out float vFoam;
+void main() {
+    ivec2 t = ivec2(gl_VertexID % uSide, gl_VertexID / uSide);
+    vec4 P = texelFetch(uPos, t, 0);
+    float foam = texelFetch(uVel, t, 0).w;
+    if (P.w < 0.5 || foam < 0.02) { gl_Position = vec4(4.0, 4.0, 4.0, 1.0); gl_PointSize = 1.0; vFoam = 0.0; return; }
+    vec4 eye = uView * vec4(P.xyz, 1.0);
+    vFoam = foam;
+    gl_Position = uProjection * eye;
+    gl_PointSize = 1.6 * uRadius * uProjection[1][1] * uResolution.y / max(1e-3, -eye.z);
+}
+
+//@ foamFragment
+// A soft disc of the particle's foam, added up over the particles.
+in float vFoam;
+out vec4 outFoam;
+void main() {
+    vec2 q = gl_PointCoord * 2.0 - 1.0;
+    float r2 = dot(q, q);
+    if (r2 > 1.0) discard;
+    outFoam = vec4(vFoam * (1.0 - r2) * (1.0 - r2) * 0.6, 0.0, 0.0, 1.0);
 }
