@@ -18,6 +18,8 @@ uniform float uDt;             // seconds, within 0,25·cell/(|u| + √(g·h))
 uniform float uViscosity;      // kinematic, m²/s
 uniform float uSpeedCap;       // m/s: no liquid moves faster, which keeps the step within its bound
 uniform float uRetention;      // σ(1 − cos θ)/ρ, m³/s²: what the contact line holds a wet-dry front with
+uniform float uTension;        // σ/ρ, m³/s²: the capillary pressure −σ∇²η inside the liquid
+uniform float uSheetSpeed;     // m/s: the jet's speed where it lands; the impact zone flows radially at it
 uniform vec2 uSpout;           // where the spout lands, cells; negative when off
 uniform float uSpoutRadius;    // cells
 uniform float uSpoutRate;      // metres of thickness per second over the spout's disc
@@ -156,6 +158,17 @@ Flux face(vec4 A, vec4 B, float etaA, float etaB, bool an, bool bn, ivec2 ca, iv
     return f;
 }
 
+// ∇²η of the surface at a cell from its four neighbours, when it and they are all wet and on the floor.
+bool laplacian(ivec2 c, ivec2 size, out float lap) {
+    lap = 0.0;
+    if (c.x < 1 || c.y < 1 || c.x >= size.x - 1 || c.y >= size.y - 1) return false;
+    vec4 m = texelFetch(uState, c, 0), l = texelFetch(uState, c - ivec2(1, 0), 0), r = texelFetch(uState, c + ivec2(1, 0), 0);
+    vec4 d = texelFetch(uState, c - ivec2(0, 1), 0), u = texelFetch(uState, c + ivec2(0, 1), 0);
+    if (m.r <= DRY || l.r <= DRY || r.r <= DRY || d.r <= DRY || u.r <= DRY) return false;
+    lap = (l.r + l.a + r.r + r.a + d.r + d.a + u.r + u.a - 4.0 * (m.r + m.a)) / (uCell * uCell);
+    return true;
+}
+
 vec4 cellAt(ivec2 p, ivec2 size, out bool exists) {
     exists = p.x >= 0 && p.y >= 0 && p.x < size.x && p.y < size.y;
     return exists ? texelFetch(uState, p, 0) : vec4(0.0);
@@ -190,6 +203,15 @@ void main() {
     // this is what keeps a level surface still on a sloping floor.
     qx -= k * G * 0.5 * (meL.r + meR.r) * (meR.a - meL.a);
     qy -= k * G * 0.5 * (meD.r + meU.r) * (meU.a - meD.a);
+    // The capillary pressure −σ∇²η: the liquid is pushed from where its surface is convex to where it is concave,
+    // q += dt·h·(σ/ρ)·∇(∇²η), on cells whose whole stencil is wet (at an edge the curvature is the meniscus, which
+    // the contact line handles). This is what rings a poured pool with capillary ripples.
+    if (uTension > 0.0 && me.r > DRY) {
+        float push = uDt * me.r * uTension / (2.0 * uCell);
+        float lapL, lapR, lapD, lapU;
+        if (laplacian(p - ivec2(1, 0), size, lapL) && laplacian(p + ivec2(1, 0), size, lapR)) qx += push * (lapR - lapL);
+        if (laplacian(p - ivec2(0, 1), size, lapD) && laplacian(p + ivec2(0, 1), size, lapU)) qy += push * (lapU - lapD);
+    }
     // The spout.
     if (uSpout.x >= 0.0) {
         vec2 d = (vec2(p) + 0.5) - uSpout;
@@ -202,6 +224,14 @@ void main() {
         float h2 = h * h;
         float inv = 2.0 * h / (h2 + max(h2, THIN * THIN));
         vec2 u = vec2(qx, qy) * inv * drag;
+        // The impact zone, twice the jet's radius: Watson's stagnation flow, radial, from rest at the centre to the
+        // jet's speed at its edge, prescribed rather than pushed, so the sheet leaves the zone the same in every
+        // direction; a jet's momentum turned sideways is what drives the thin fast sheet and the hydraulic jump.
+        if (uSpout.x >= 0.0 && uSheetSpeed > 0.0) {
+            vec2 d = (vec2(p) + 0.5) - uSpout;
+            float r = length(d);
+            if (r < 2.0 * uSpoutRadius && r > 1e-6) u = d / r * (uSheetSpeed * min(1.0, r / uSpoutRadius));
+        }
         float speed = length(u);
         if (speed > uSpeedCap) u *= uSpeedCap / speed;
         qx = h * u.x;

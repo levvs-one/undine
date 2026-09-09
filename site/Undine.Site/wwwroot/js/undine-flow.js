@@ -154,7 +154,7 @@ void main() {
         const { gl, spec } = view;
         const cap = spec.speedCap;
         const dt = 0.25 * cellSize(spec) / (cap + Math.sqrt(G * Math.max(spec.dishDepth + 0.02, 0.02)));
-        const substeps = Math.min(24, Math.max(1, Math.ceil(seconds / dt)));
+        const substeps = Math.min(60, Math.max(1, Math.ceil(seconds / dt)));
         const sub = seconds / substeps;
         const spout = view.spout;
         if (spout) view.poured += spec.rate * seconds;
@@ -171,6 +171,10 @@ void main() {
                 gl.uniform1f(u.uViscosity, spec.kinematicViscosity);
                 gl.uniform1f(u.uSpeedCap, cap);
                 gl.uniform1f(u.uRetention, spec.retention);
+                gl.uniform1f(u.uTension, spec.tensionOverDensity);
+                // The jet's speed where it lands: from the spout's flow over its mouth, plus the fall.
+                const mouth = spec.rate / (Math.PI * spec.spoutRadius * spec.spoutRadius);
+                gl.uniform1f(u.uSheetSpeed, Math.sqrt(mouth * mouth + 2 * G * spec.spoutHeight));
                 if (spout) {
                     const radiusCells = Math.max(1, spec.spoutRadius / cellSize(spec));
                     const cellsUnder = Math.PI * radiusCells * radiusCells;
@@ -257,6 +261,8 @@ void main() {
             gl.uniform1i(u.uTable, spec.table);
             gl.uniform3f(u.uSpout, spout ? spout.x : 0, spout ? spec.spoutHeight : -1, spout ? spout.z : 0);
             gl.uniform1f(u.uSpoutRadius, spec.spoutRadius);
+            gl.uniform1f(u.uJetSpeed, spec.rate / (Math.PI * spec.spoutRadius * spec.spoutRadius));
+            gl.uniform1f(u.uContactAngle, spec.contactAngle);
         });
     }
 

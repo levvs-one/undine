@@ -20,7 +20,9 @@ uniform float uLampStrength;
 uniform float uExposure;
 uniform int uTable;            // 0 wood, 1 stone, 2 dark
 uniform vec3 uSpout;           // x, top y, z of the stream, metres; y negative when off
-uniform float uSpoutRadius;    // metres
+uniform float uSpoutRadius;    // metres, at the spout
+uniform float uJetSpeed;       // m/s at the spout: the stream narrows as it falls faster
+uniform float uContactAngle;   // radians: the meniscus at the puddle's edge is drawn as its arc
 
 const float AMBIENT = 0.26;
 const float THIN = 2e-5;       // below this the film does not count as liquid to the eye
@@ -57,11 +59,41 @@ float floorAt(vec2 xz) {
     return filmAt(xz).y;
 }
 
+// The four texels round a point: their bilinear level and floor as filmAt, the thickest of them, and whether any is dry.
+vec4 filmEdgeAt(vec2 xz) {
+    ivec2 size = textureSize(uState, 0);
+    vec2 p = clamp((xz / uSide + 0.5) * vec2(size) - 0.5, vec2(0.0), vec2(size) - 1.0);
+    ivec2 i = ivec2(floor(p));
+    vec2 f = p - vec2(i);
+    ivec2 j = min(i + 1, size - 1);
+    vec4 a = texelFetch(uState, i, 0), b = texelFetch(uState, ivec2(j.x, i.y), 0);
+    vec4 c = texelFetch(uState, ivec2(i.x, j.y), 0), d = texelFetch(uState, j, 0);
+    vec2 la = vec2(a.r + a.a, a.a), lb = vec2(b.r + b.a, b.a), lc = vec2(c.r + c.a, c.a), ld = vec2(d.r + d.a, d.a);
+    vec2 m = mix(mix(la, lb, f.x), mix(lc, ld, f.x), f.y);
+    float thickest = max(max(a.r, b.r), max(c.r, d.r));
+    float dry = min(min(a.r, b.r), min(c.r, d.r)) <= THIN ? 1.0 : 0.0;
+    return vec4(max(0.0, m.x - m.y), m.y, thickest, dry);
+}
+
+// The liquid's top. At the edge the interpolation ramps the thickness down over one cell; that ramp is reshaped
+// into the meniscus a puddle really has there, a circular arc that leaves the floor at the contact angle and
+// meets the flat top tangentially: radius H/(1 − cos θ) for a puddle H thick, which for water is a rounded lip about
+// four millimetres across. Angles past 90° would overhang, which a height field cannot hold, so they are capped.
 float topAt(vec2 xz) {
     float halfSide = uSide * 0.5;
     if (abs(xz.x) > halfSide || abs(xz.y) > halfSide) return 0.0;
-    vec2 f = filmAt(xz);
-    return f.y + (f.x > THIN ? f.x : 0.0);
+    vec4 f = filmEdgeAt(xz);
+    float t = f.x;
+    if (t <= THIN) return f.y;
+    if (f.w > 0.5 && f.z > THIN) {
+        float H = f.z;
+        float theta = min(uContactAngle, 1.5707963);
+        float R = H / (1.0 - cos(theta));
+        float sc = R * sin(theta), yc = H - R;
+        float s = clamp(t / H, 0.0, 1.0) * sc;
+        t = max(0.0, yc + sqrt(max(0.0, R * R - (s - sc) * (s - sc))));
+    }
+    return f.y + t;
 }
 
 float hash(vec2 p) {
@@ -192,7 +224,16 @@ vec3 floorNormal(vec2 xz) {
     return normalize(vec3(-(r - l) / (2.0 * e), 1.0, -(u - d) / (2.0 * e)));
 }
 
-// The stream: a vertical cylinder from the spout down to the surface; the ray's entry, or negative.
+// The stream's radius at a height: it falls freely, v² = v₀² + 2g·drop, and carries the same flow at every
+// height, so r = r₀·√(v₀/v); a stream from a tap visibly narrows on the way down.
+float streamRadiusAt(float y) {
+    float v0 = max(uJetSpeed, 0.05);
+    float v2 = v0 * v0 + 2.0 * 9.80665 * max(0.0, uSpout.y - y);
+    return uSpoutRadius * sqrt(v0 / sqrt(v2));
+}
+
+// The stream from the spout down to the surface: the ray's entry into its narrowing body, or negative, and the
+// normal there. Marched within the spout's own cylinder, then bisected.
 float stream(vec3 o, vec3 d, out vec3 n) {
     n = vec3(0.0);
     if (uSpout.y <= 0.0) return -1.0;
@@ -200,13 +241,35 @@ float stream(vec3 o, vec3 d, out vec3 n) {
     float a = dot(d.xz, d.xz), b = 2.0 * dot(oc, d.xz), c = dot(oc, oc) - uSpoutRadius * uSpoutRadius;
     float disc = b * b - 4.0 * a * c;
     if (disc < 0.0 || a < 1e-8) return -1.0;
-    float t = (-b - sqrt(disc)) / (2.0 * a);
-    if (t < 0.0) return -1.0;
-    vec3 p = o + d * t;
+    float t0 = max(0.0, (-b - sqrt(disc)) / (2.0 * a)), t1 = (-b + sqrt(disc)) / (2.0 * a);
+    if (t1 <= 0.0) return -1.0;
     float bottom = topAt(uSpout.xz);
-    if (p.y > uSpout.y || p.y < bottom) return -1.0;
-    n = normalize(vec3(p.x - uSpout.x, 0.0, p.z - uSpout.z));
-    return t;
+    float tPrev = t0, tHit = -1.0;
+    for (int i = 0; i <= 16; i++) {
+        float t = mix(t0, t1, float(i) / 16.0);
+        vec3 p = o + d * t;
+        if (p.y <= uSpout.y && p.y >= bottom && length(p.xz - uSpout.xz) < streamRadiusAt(p.y)) {
+            float lo = tPrev, hi = t;
+            for (int j = 0; j < 6; j++) {
+                float m = 0.5 * (lo + hi);
+                vec3 q = o + d * m;
+                if (q.y <= uSpout.y && q.y >= bottom && length(q.xz - uSpout.xz) < streamRadiusAt(q.y)) hi = m; else lo = m;
+            }
+            tHit = hi;
+            break;
+        }
+        tPrev = t;
+    }
+    if (tHit < 0.0) return -1.0;
+    vec3 p = o + d * tHit;
+    vec2 dd = p.xz - uSpout.xz;
+    float r = max(streamRadiusAt(p.y), 1e-6);
+    // dr/dy of the profile above, for the normal's tilt: the body widens towards the spout.
+    float v0 = max(uJetSpeed, 0.05);
+    float v2 = v0 * v0 + 2.0 * 9.80665 * max(0.0, uSpout.y - p.y);
+    float drdy = uSpoutRadius * sqrt(v0) * 9.80665 / (2.0 * pow(v2, 1.25));
+    n = normalize(vec3(dd.x / r, -drdy, dd.y / r));
+    return tHit;
 }
 
 vec3 shadeTable(vec3 p, float w) {
@@ -261,7 +324,8 @@ void main() {
             vec3 inside = refract(dir, streamNormal, 1.0 / n);
             vec3 outDir = refract(inside, -streamNormal, n);
             if (dot(outDir, outDir) < 0.5) outDir = inside;
-            vec3 exitPoint = p + inside * (2.0 * uSpoutRadius * cosI);
+            float radiusHere = streamRadiusAt(p.y);
+            vec3 exitPoint = p + inside * (2.0 * radiusHere * cosI);
             float tb = march(exitPoint, outDir, far);
             float behind;
             if (tb > 0.0) {
@@ -270,7 +334,7 @@ void main() {
                 vec2 f = filmAt(q.xz);
                 behind = (f.x > THIN ? wetTable(q, w, n) : shadeTable(q, w))[c];
             } else behind = sky(outDir)[c];
-            behind *= exp(-uAlpha[c] * 2.0 * uSpoutRadius);
+            behind *= exp(-uAlpha[c] * 2.0 * radiusHere);
             colour[c] = r * skyColour[c] + (1.0 - r) * behind;
         }
         outColour = vec4(compand(tonemap(colour)), 1.0);

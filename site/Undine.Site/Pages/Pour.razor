@@ -205,6 +205,8 @@
             lamp = 1.0,
             exposure = exposureValue,
             retention = Retention,
+            tensionOverDensity = liquid.SurfaceTensionMNPerM * 1e-3 / liquid.DensityKgPerM3,
+            contactAngle = contactAngle * Math.PI / 180,
             // The fastest the liquid is allowed to run: what a fall from the spout's height gives, and a little more.
             speedCap = Math.Sqrt(2 * 9.80665 * spoutHeightValue) + 0.5,
         };

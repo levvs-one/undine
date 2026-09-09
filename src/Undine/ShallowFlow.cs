@@ -23,8 +23,9 @@ namespace Undine;
 /// (the wet share of a disc across the face), which draws a puddle round, and the floor holds it unevenly from spot
 /// to spot by ±20% (contact-angle hysteresis), so it is never a circle. A held line is not a wall: it pulls on the
 /// edge with the Young force σ(1 − cos θ), so an edge thinner than the puddle's thickness is drawn back into it,
-/// which is how a splashed sheet gathers itself up again (the Taylor–Culick balance ρhv² = σ(1 − cos θ)). Capillary
-/// ripples and the meniscus's own curvature are not in the flow. The step obeys the CFL bound
+/// which is how a splashed sheet gathers itself up again (the Taylor–Culick balance ρhv² = σ(1 − cos θ)). Surface tension also
+/// acts inside the liquid as the capillary pressure −σ∇²η, so a poured pool rings with capillary ripples; the
+/// meniscus's own curvature at the edge is not in the flow. The step obeys the CFL bound
 /// 0.25·cell/max(|u| + √(g·h)), the two-dimensional one that keeps h ≥ 0; <see cref="Step"/> splits a longer dt as needed.
 /// </remarks>
 public sealed class ShallowFlow
@@ -37,6 +38,7 @@ public sealed class ShallowFlow
     private readonly float[] h, qx, qy;
     private readonly float[] nh, nqx, nqy;
     private readonly float[] source;
+    private double spoutX, spoutY, spoutRadius, sheetSpeed;
 
     /// <param name="cells">Cells per side; the grid is square.</param>
     /// <param name="sizeMetres">Physical side of the grid, metres.</param>
@@ -153,9 +155,22 @@ public sealed class ShallowFlow
     }
 
     /// <summary>A spout: liquid arriving at <paramref name="rateCubicMetresPerSecond"/> over a disc, spread evenly; zero rate stops it.</summary>
-    public void Pour(double xMetres, double yMetres, double radiusMetres, double rateCubicMetresPerSecond)
+    public void Pour(double xMetres, double yMetres, double radiusMetres, double rateCubicMetresPerSecond) =>
+        Pour(xMetres, yMetres, radiusMetres, rateCubicMetresPerSecond, 0);
+
+    /// <summary>
+    /// Pours as above, with the jet landing at the given speed: where it lands, over twice its radius, the flow is
+    /// Watson's stagnation flow, radial and rising from rest at the centre to the jet's speed at the jet's edge. A
+    /// jet's momentum turns sideways on the floor, which is what drives the thin fast sheet and the hydraulic jump
+    /// around the point of impact; the mass still arrives through the spout alone.
+    /// </summary>
+    public void Pour(double xMetres, double yMetres, double radiusMetres, double rateCubicMetresPerSecond, double speedMetresPerSecond)
     {
         Array.Clear(source);
+        spoutX = xMetres;
+        spoutY = yMetres;
+        spoutRadius = radiusMetres;
+        sheetSpeed = rateCubicMetresPerSecond > 0 ? Math.Max(0, speedMetresPerSecond) : 0;
         if (rateCubicMetresPerSecond <= 0)
         {
             return;
@@ -205,8 +220,16 @@ public sealed class ShallowFlow
         }
 
         // Never longer than the bound of a layer one cell thick, so on a dry floor the spout's liquid still arrives in
-        // small portions instead of a whole step's worth in one column.
-        return Math.Min(0.25 * CellMetres / fastest, 0.25 * CellMetres / Math.Sqrt(Gravity * CellMetres));
+        // small portions instead of a whole step's worth in one column; nor than the period of the shortest capillary
+        // ripple the grid holds, ω² = σk³/ρ at k = π/cell, which the explicit capillary term needs.
+        double bound = Math.Min(0.25 * CellMetres / fastest, 0.25 * CellMetres / Math.Sqrt(Gravity * CellMetres));
+        double tension = Liquid.SurfaceTensionMNPerM * 1e-3 / Liquid.DensityKgPerM3;
+        if (tension > 0)
+        {
+            bound = Math.Min(bound, Math.Sqrt(CellMetres * CellMetres * CellMetres / (Math.PI * Math.PI * Math.PI * tension)));
+        }
+
+        return bound;
     }
 
     /// <summary>Advances the flow by <paramref name="seconds"/>, in as many substeps as the CFL bound requires.</summary>
@@ -294,8 +317,39 @@ public sealed class ShallowFlow
             nqy[u] -= k * 0.5f * g * h[u] * h[u];
         }
 
+        // The capillary pressure −σ∇²η: the liquid is pushed from where its surface is convex to where it is concave,
+        // q += dt·h·(σ/ρ)·∇(∇²η), explicit, on cells whose whole stencil is wet (at an edge the surface's curvature is
+        // the meniscus, which the contact line handles).
+        float tension = (float)(Liquid.SurfaceTensionMNPerM * 1e-3 / Liquid.DensityKgPerM3);
+        if (tension > 0f)
+        {
+            for (int y = 1; y < n - 1; y++)
+            {
+                for (int x = 1; x < n - 1; x++)
+                {
+                    int i = Index(x, y);
+                    if (h[i] <= Dry)
+                    {
+                        continue;
+                    }
+
+                    float push = (float)dt * h[i] * tension / (2f * cell);
+                    if (Laplacian(x - 1, y, out float lapL) && Laplacian(x + 1, y, out float lapR))
+                    {
+                        nqx[i] += push * (lapR - lapL);
+                    }
+
+                    if (Laplacian(x, y - 1, out float lapD) && Laplacian(x, y + 1, out float lapU))
+                    {
+                        nqy[i] += push * (lapU - lapD);
+                    }
+                }
+            }
+        }
+
         // The spout, then the bottom's drag on what moves: implicit, so a thin film of honey simply stops.
         float nu = (float)Liquid.KinematicViscosity;
+        float zone = (float)(2 * spoutRadius);
         for (int i = 0; i < nh.Length; i++)
         {
             nh[i] += source[i] * (float)dt;
@@ -312,6 +366,20 @@ public sealed class ShallowFlow
             float t = nh[i], t2 = t * t;
             float inv = 2f * t / (t2 + Math.Max(t2, Thin * Thin));
             float ux = nqx[i] * inv * drag, uy = nqy[i] * inv * drag;
+            if (sheetSpeed > 0)
+            {
+                // The impact zone: Watson's stagnation flow, radial, from rest at the centre to the jet's speed at
+                // its edge, prescribed rather than pushed, so the sheet leaves the zone the same in every direction.
+                float dx = (float)((i % Cells + 0.5) * cell - spoutX), dy = (float)((i / Cells + 0.5) * cell - spoutY);
+                float r = MathF.Sqrt(dx * dx + dy * dy);
+                if (r < zone && r > 1e-9f)
+                {
+                    float speed = (float)sheetSpeed * Math.Min(1f, r / (float)spoutRadius);
+                    ux = speed * dx / r;
+                    uy = speed * dy / r;
+                }
+            }
+
             nqx[i] = t * ux;
             nqy[i] = t * uy;
         }
@@ -466,6 +534,27 @@ public sealed class ShallowFlow
         be = etai + 0.5f * side * se - he;
         ue = he > Dry ? ui + 0.5f * side * su : 0f;
         ve = he > Dry ? vi + 0.5f * side * sv : 0f;
+    }
+
+    // ∇²η of the surface at a cell from its four neighbours, when it and they are all wet and on the floor.
+    private bool Laplacian(int x, int y, out float lap)
+    {
+        lap = 0f;
+        if (x < 1 || y < 1 || x >= Cells - 1 || y >= Cells - 1)
+        {
+            return false;
+        }
+
+        int i = Index(x, y);
+        int l = i - 1, r = i + 1, d = i - Cells, u = i + Cells;
+        if (h[i] <= Dry || h[l] <= Dry || h[r] <= Dry || h[d] <= Dry || h[u] <= Dry)
+        {
+            return false;
+        }
+
+        float cell = (float)CellMetres;
+        lap = (h[l] + floor[l] + h[r] + floor[r] + h[d] + floor[d] + h[u] + floor[u] - 4f * (h[i] + floor[i])) / (cell * cell);
+        return true;
     }
 
     private static float Minmod(float a, float b) => a * b <= 0f ? 0f : Math.Abs(a) < Math.Abs(b) ? a : b;
